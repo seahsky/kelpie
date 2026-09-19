@@ -21,7 +21,7 @@
     "jev_api_key": {
       "type": "string",
       "title": "Jev API key (optional)",
-      "description": "Leave empty unless you want the experimental spawn gate. With a key, kelpie asks TypeSafe AI's Jev to pick each delegated spawn's role, model, and effort instead of using the fixed pins in each role's frontmatter. Without one, the gate emits nothing and kelpie behaves exactly as it does today. Nothing in kelpie's measured results depends on this, and the experiment that would judge it has not been run.",
+      "description": "Leave empty unless you want the experimental spawn gate. With a key, kelpie sends an excerpt of each file named in a gated Workflow call (up to 120 lines or 6000 characters), plus its path, to TypeSafe AI's Jev, and uses the answer to pick that spawn's role, model, and effort instead of the fixed pins in each role's frontmatter. Files outside the working directory are never read or sent. Without a key the gate emits nothing and kelpie behaves exactly as it does today. Nothing in kelpie's measured results depends on this, and the experiment that would judge it has not been run.",
       "sensitive": true,
       "required": false
     }

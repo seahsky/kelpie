@@ -4,9 +4,9 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
 import { execFile } from 'node:child_process'
-import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, relative } from 'node:path'
 
 const GATE = new URL('../hooks/jev-gate/gate.mjs', import.meta.url).pathname
 
@@ -241,6 +241,46 @@ test('a file the gate cannot read falls back for that path only', async () => {
     assert.equal(gate.byPath['src/a.ts'].model, 'haiku')
     assert.equal(gate.byPath['src/b.ts'].source, 'fallback')
     assert.equal(gate.byPath['src/b.ts'].reason, 'file unreadable')
+  } finally {
+    server.close()
+  }
+})
+
+/**
+ * Every file the gate reads is sent to the API, so the set of readable files is the set of uploadable files.
+ * `args.paths` is model-written, not a scoped list, so these three shapes are the ones that must never be read:
+ * an absolute path, a relative walk out, and a symlink inside the workspace aimed outside it.
+ */
+test('a path outside cwd is never read, so its contents are never sent', async () => {
+  const cwd = await workspace(FILES)
+  const outside = join(await mkdtemp(join(tmpdir(), 'kelpie-secret-')), 'id_rsa')
+  await writeFile(outside, 'CANARY_PRIVATE_KEY_BODY\n')
+  await symlink(outside, join(cwd, 'src/link.ts'))
+
+  const bodies = []
+  const { server, url } = await stubServer((body) => {
+    bodies.push(body)
+    return body.questions.verify_needs_reasoning
+      ? { status: 200, payload: { answers: { verify_needs_reasoning: { type: 'noul', noul: 0.1 } } } }
+      : { status: 200, payload: { answers: { fully_specified: { type: 'noul', noul: 0.95 }, difficulty: { type: 'score', score: 0.1, confidence: 0.9 }, long_horizon: { type: 'noul', noul: 0.05 } } } }
+  })
+  try {
+    const event = auditEvent(cwd, await transcript(cwd, 'claude-opus-5'))
+    // A relative walk to a file that really exists outside cwd, so the refusal proves containment rather than absence.
+    const walk = relative(cwd, outside)
+    event.tool_input.args.paths = ['src/a.ts', outside, walk, 'src/link.ts']
+    const out = await runGate(event, { KELPIE_GATE_MODE: 'jev', KELPIE_GATE_JEV_URL: url, CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'test-key' })
+    const gate = JSON.parse(out).hookSpecificOutput.updatedInput.args.gate
+
+    assert.equal(gate.byPath['src/a.ts'].model, 'haiku', 'a path inside cwd still routes normally')
+    for (const path of [outside, walk, 'src/link.ts']) {
+      assert.equal(gate.byPath[path].source, 'fallback', `${path} should fall back`)
+      assert.equal(gate.byPath[path].reason, 'file outside cwd', `${path} should be refused for being outside cwd`)
+    }
+
+    const sent = JSON.stringify(bodies)
+    assert.ok(!sent.includes('CANARY_PRIVATE_KEY_BODY'), 'no outside-cwd file contents may reach the API')
+    assert.equal(bodies.filter((b) => b.state && b.state.file_excerpt !== undefined).length, 1, 'only the one in-cwd file is uploaded')
   } finally {
     server.close()
   }

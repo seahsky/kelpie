@@ -22,6 +22,8 @@ The table above is the ordinary policy: one model and one effort per role, decid
 
 The gate decides per spawn instead. It runs as a `PreToolUse` hook on the `Workflow` tool, asks [TypeSafe AI's Jev](https://docs.typesafe.ai) how mechanical and how fully specified each item's work is, and writes a per-item decision the workflow reads.
 
+**It sends your code off the machine.** For each path in the call, the gate reads the file and POSTs an excerpt — up to 120 lines or 6000 characters — plus the path and line count to `api.typesafe.ai`. That is the mechanism, not a side effect: the questions are about the file's contents. Files outside the working directory are refused and never read, symlinks included. Setting `jev_api_key` is what turns this on; leave it empty and nothing is read or sent.
+
 **It only routes down.** The rungs on offer are fixed from your session's model *before* Jev is asked: haiku/sonnet/opus under an Opus or Fable session, haiku/sonnet under a Sonnet one. Jev is asked about the work, never about which model should run it. That split is the whole safety property. A decision model that misreads a task can pick the wrong rung; it cannot invent a rung above the session you're paying for, or above `xhigh`.
 
 **Every failure falls back to the pin.** A timeout, an unexpected shape, an unestablished session model — each one leaves the spawn exactly as the workflow had it. With no key configured the gate emits nothing at all, and `tests/workflows.test.mjs` pins that spawn by spawn, so an install without a key cannot drift.
