@@ -23,9 +23,9 @@
 // A session model that cannot be established is one of those failures: with no known ceiling the gate cannot show
 // that a route is downward, so it emits nothing and records why.
 
-import { readFileSync } from 'node:fs'
+import { readFileSync, realpathSync } from 'node:fs'
 import { appendFileSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { resolve, sep } from 'node:path'
 import { STAGES, applyConfidenceFloor, availableModels, clampDecision, decideFanout, decideVerify, modelCeiling, staticDecision } from './policy.mjs'
 import { JEV_MODEL, JEV_URL, askJev, fanoutRequest, verifyRequest } from './jev.mjs'
 import { resolveSession } from './session.mjs'
@@ -104,17 +104,50 @@ const askOrFallback = async ({ stage, request, apiKey, decide, deadline }) => {
   }
 }
 
+/**
+ * Read a file, but only if it is really inside `cwd`.
+ *
+ * `args.paths` is written by the model, so it is not a scoped list: it can name an absolute path, or walk out with
+ * `../`. `resolve()` on its own does not constrain anything — it drops every preceding segment the moment it meets an
+ * absolute path, so `resolve('/repo', '/home/you/.ssh/id_rsa')` is that key. Every file this reads is sent to the API
+ * in `state.file_excerpt`, so an unconstrained read here is an unconstrained upload, and it happens in a PreToolUse
+ * hook, which is before the user can decline the call.
+ *
+ * The comparison is on real paths rather than resolved ones, because a symlink inside the repo pointing outside it
+ * passes a `startsWith` test on the unresolved path and fails this one.
+ *
+ * Returns `{ contents }` on success, or `{ reason }` naming why the file was skipped.
+ */
+const readInside = (cwd, path) => {
+  let base
+  try {
+    base = realpathSync(cwd)
+  } catch {
+    return { reason: 'cwd unresolvable' }
+  }
+  let target
+  try {
+    target = realpathSync(resolve(base, path))
+  } catch {
+    return { reason: 'file unreadable' }
+  }
+  if (target !== base && !target.startsWith(base + sep)) return { reason: 'file outside cwd' }
+  try {
+    return { contents: readFileSync(target, 'utf8') }
+  } catch {
+    return { reason: 'file unreadable' }
+  }
+}
+
 const gateAudit = async ({ args, cwd, apiKey, deadline, ceilings }) => {
   const fanoutStage = STAGES.AUDIT_FIND
   const perPath = await mapLimit(args.paths, CONCURRENCY, async (path) => {
     if (MODE !== 'jev') return { path, ...{ decision: staticDecision(fanoutStage), ms: 0, answers: null } }
-    let contents = ''
-    try {
-      contents = readFileSync(resolve(cwd, path), 'utf8')
-    } catch {
-      return { path, decision: { ...staticDecision(fanoutStage), source: 'fallback', reason: 'file unreadable' }, ms: 0, answers: null }
+    const read = readInside(cwd, path)
+    if (read.reason) {
+      return { path, decision: { ...staticDecision(fanoutStage), source: 'fallback', reason: read.reason }, ms: 0, answers: null }
     }
-    const request = fanoutRequest({ work: args.concern, path, contents, model: API_MODEL })
+    const request = fanoutRequest({ work: args.concern, path, contents: read.contents, model: API_MODEL })
     return { path, ...(await askOrFallback({ stage: fanoutStage, request, apiKey, decide: (a) => decideFanout(fanoutStage, a, ceilings), deadline })) }
   })
   const verify = MODE !== 'jev'
@@ -138,13 +171,11 @@ const gateMigrate = async ({ args, cwd, apiKey, deadline, ceilings }) => {
   const stage = STAGES.MIGRATE_APPLY
   const perPath = await mapLimit(args.paths, CONCURRENCY, async (path) => {
     if (MODE !== 'jev') return { path, decision: staticDecision(stage), ms: 0, answers: null }
-    let contents = ''
-    try {
-      contents = readFileSync(resolve(cwd, path), 'utf8')
-    } catch {
-      return { path, decision: { ...staticDecision(stage), source: 'fallback', reason: 'file unreadable' }, ms: 0, answers: null }
+    const read = readInside(cwd, path)
+    if (read.reason) {
+      return { path, decision: { ...staticDecision(stage), source: 'fallback', reason: read.reason }, ms: 0, answers: null }
     }
-    const request = fanoutRequest({ work: args.transformation, path, contents, model: API_MODEL })
+    const request = fanoutRequest({ work: args.transformation, path, contents: read.contents, model: API_MODEL })
     return { path, ...(await askOrFallback({ stage, request, apiKey, decide: (a) => decideFanout(stage, a, ceilings), deadline })) }
   })
   return {
