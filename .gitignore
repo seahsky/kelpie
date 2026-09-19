@@ -1,0 +1,41 @@
+.DS_Store
+__pycache__/
+.pytest_cache/
+
+# Agent worktrees are whole checkouts of this repo.
+.claude/worktrees/
+
+# Everything below stays local. This repo publishes the plugin and nothing else:
+# the research, the measurement harness, the planning record, and the agent
+# instructions are working material, not product.
+
+# Agent instructions.
+CLAUDE.md
+AGENTS.md
+.claude/
+.cursorrules
+.github/copilot-instructions.md
+
+# Architecture decision records.
+adr/
+ADR/
+decisions/
+doc/adr/
+**/adr/
+*.adr.md
+
+# Specs and planning.
+specs/
+spec/
+rfcs/
+RFC/
+design/
+planning/
+*.spec.md
+*.rfc.md
+PLAN.md
+ROADMAP.md
+
+# Research, design writeups, and the measurement harness.
+/docs/
+/bench/

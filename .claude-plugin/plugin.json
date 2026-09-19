@@ -1,0 +1,29 @@
+{
+  "name": "kelpie",
+  "displayName": "Kelpie",
+  "version": "0.1.0",
+  "description": "Delegation policy for Claude Code, cut down to what its own benchmark supports: two pinned roles, and a skill that argues against delegating by default.",
+  "author": {
+    "name": "seahsky"
+  },
+  "homepage": "https://github.com/seahsky/kelpie",
+  "repository": "https://github.com/seahsky/kelpie",
+  "license": "MIT",
+  "keywords": [
+    "orchestration",
+    "subagents",
+    "cost-optimization",
+    "model-routing",
+    "workflows",
+    "benchmark"
+  ],
+  "userConfig": {
+    "jev_api_key": {
+      "type": "string",
+      "title": "Jev API key (optional)",
+      "description": "Leave empty unless you want the experimental spawn gate. With a key, kelpie asks TypeSafe AI's Jev to pick each delegated spawn's role, model, and effort instead of using the fixed pins in each role's frontmatter. Without one, the gate emits nothing and kelpie behaves exactly as it does today. Nothing in kelpie's measured results depends on this, and the experiment that would judge it has not been run.",
+      "sensitive": true,
+      "required": false
+    }
+  }
+}

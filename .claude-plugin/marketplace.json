@@ -1,0 +1,14 @@
+{
+  "name": "kelpie",
+  "owner": {
+    "name": "seahsky"
+  },
+  "description": "Marketplace for the kelpie plugin \u2014 a delegation policy measured against its own benchmark.",
+  "plugins": [
+    {
+      "name": "kelpie",
+      "source": "./",
+      "description": "Delegation policy for Claude Code, cut down to what its own benchmark supports: two pinned roles, and a skill that argues against delegating by default."
+    }
+  ]
+}
