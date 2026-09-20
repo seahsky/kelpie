@@ -4,16 +4,22 @@ import {
   EFFORT_LADDER,
   MODEL_LADDER,
   MODELS_WITHOUT_EFFORT,
+  PROMPT_DECISIVE,
+  PROMPT_TIERING,
   PolicyError,
+  ROLE_EXPLORE,
+  ROLE_GENERAL,
   ROLE_MECH,
   ROLE_SESSION,
   ROLE_VERIFIER,
   STAGES,
   applyConfidenceFloor,
+  applyPromptFloor,
   availableModels,
   clampDecision,
   clampRung,
   decideFanout,
+  decidePrompt,
   decideReview,
   decideVerify,
   modelCeiling,
@@ -240,4 +246,134 @@ test('a low confidence drops the review along with the rest of the decision', ()
   assert.notEqual(decided.review, null)
   const floored = applyConfidenceFloor(STAGES.MIGRATE_APPLY, decided, given, 0.6)
   assert.equal(floored.review, null, 'falling back means falling all the way back')
+})
+
+// decidePrompt: the prompt-level route the delegation triage takes in prefer mode. It runs the same difficulty and
+// review gates as the fan-out stages, entered one question earlier, so these tests belong next to those.
+
+const promptAnswers = ({ saves = 0.9, readOnly = 0.05, specified = 0.95, difficulty = 0.1, longHorizon = 0.05, confidence = 0.9 } = {}) => ({
+  delegation_saves: { type: 'noul', noul: saves },
+  read_only: { type: 'noul', noul: readOnly },
+  fully_specified: { type: 'noul', noul: specified },
+  difficulty: { type: 'score', score: difficulty, confidence },
+  long_horizon: { type: 'noul', noul: longHorizon },
+})
+
+const routeFor = (overrides, ceilings = OPUS_SESSION) => decidePrompt(promptAnswers(overrides), ceilings)
+
+test('the one case prefer mode does not delegate is the case where this session costs less', () => {
+  const route = routeFor({ saves: 0.2 })
+  assert.equal(route.delegate, false)
+  assert.equal(route.agentType, ROLE_SESSION)
+  assert.match(route.reason, /doing all of it in this session costs less/)
+})
+
+test('a borderline answer delegates, because prefer mode is the mode that delegates by default', () => {
+  assert.equal(routeFor({ saves: 0.5 }).delegate, true, '0.5 is the Noul midpoint, and the tie goes to delegating')
+  assert.equal(routeFor({ saves: 0.49 }).delegate, false)
+})
+
+test('read-only work goes to the agent Claude Code already ships, at no named tier', () => {
+  const route = routeFor({ readOnly: 0.8 })
+  assert.equal(route.agentType, ROLE_EXPLORE)
+  assert.equal(route.model, null, 'Explore inherits the session model, capped at opus, so it is already tiered')
+  assert.equal(route.effort, null)
+})
+
+test('an open decision is delegated, after it has been resolved, and never at a cheaper tier', () => {
+  const route = routeFor({ specified: 0.2, difficulty: 0.0 })
+  assert.equal(route.delegate, true)
+  assert.equal(route.agentType, ROLE_GENERAL)
+  assert.equal(route.model, null, 'mechanical difficulty does not buy haiku while a decision is still open')
+  assert.match(route.precondition, /Resolve every open decision here first/)
+})
+
+test('difficulty picks the rung, one axis at a time', () => {
+  assert.deepEqual(
+    [0.1, 1.0, 2.0].map((difficulty) => {
+      const route = routeFor({ difficulty })
+      return [route.agentType, route.model, route.effort]
+    }),
+    [[ROLE_MECH, 'haiku', null], [ROLE_MECH, 'sonnet', 'medium'], [ROLE_MECH, 'sonnet', 'high']],
+  )
+})
+
+test('hard and long-horizon work is the only route that climbs to the session ceiling', () => {
+  const route = routeFor({ difficulty: 2.0, longHorizon: 0.9 })
+  assert.equal(route.model, 'opus')
+  assert.equal(route.effort, 'xhigh')
+  assert.deepEqual(route.review, { agentType: ROLE_VERIFIER, model: 'opus', effort: 'xhigh' })
+})
+
+test('the review gate also covers work this session keeps, because self-certification is the blind spot', () => {
+  const route = routeFor({ saves: 0.1, difficulty: 2.0, longHorizon: 0.9 })
+  assert.equal(route.delegate, false)
+  assert.deepEqual(route.review, { agentType: ROLE_VERIFIER, model: 'opus', effort: 'xhigh' })
+})
+
+test('an unknown session model names a route and no model, rather than no route', () => {
+  // The spawn gate emits nothing here, because with no ceiling it cannot show a route is downward. A triage doing the
+  // same would be silent on the first prompt of every session, before any assistant turn exists to read a model from.
+  const route = routeFor({ difficulty: 2.0, longHorizon: 0.9 }, { model: null, effort: 'xhigh' })
+  assert.equal(route.agentType, ROLE_MECH)
+  assert.equal(route.model, null)
+  assert.equal(route.effort, 'xhigh')
+  assert.equal(route.review.model, null)
+})
+
+test('a missing answer is an error, not a confident zero', () => {
+  const { delegation_saves: _dropped, ...rest } = promptAnswers()
+  assert.throws(() => decidePrompt(rest, OPUS_SESSION), PolicyError)
+  assert.throws(() => decidePrompt(promptAnswers(), null), PolicyError)
+})
+
+// The floor, per answer. This is the shape of the first real call kelpie ever made: delegation_saves 0.2, which
+// settles the route alone, and difficulty 1.68 at confidence 0.52, which the flat floor used to throw the whole
+// verdict away over. The arm then ran as a copy of the arm it was meant to be contrasted against.
+const MEASURED_ANSWERS = {
+  delegation_saves: { type: 'noul', noul: 0.2 },
+  read_only: { type: 'noul', noul: 0.02 },
+  fully_specified: { type: 'noul', noul: 0.11 },
+  difficulty: { type: 'score', score: 1.68, confidence: 0.52 },
+  long_horizon: { type: 'noul', noul: 0.5 },
+}
+
+test('an unsure difficulty no longer discards a verdict that never consulted it', () => {
+  const route = decidePrompt(MEASURED_ANSWERS, OPUS_SESSION)
+  const floored = applyPromptFloor(route, MEASURED_ANSWERS, 0.6)
+  assert.equal(floored.delegate, false, 'delegation_saves 0.2 decided this, and it carries no confidence to doubt')
+  assert.match(floored.reason, /delegation_saves 0\.2/)
+  assert.equal(floored.review, null, 'the review is the one thing difficulty decided here, so it goes')
+  assert.match(floored.tiering_declined, /confidence 0\.52 below floor 0\.6/)
+})
+
+test('an unsure tier costs a route its rung, not its delegation', () => {
+  const answers = { ...promptAnswers({ difficulty: 2.0, longHorizon: 0.9 }), difficulty: { type: 'score', score: 2.0, confidence: 0.3 } }
+  const route = decidePrompt(answers, OPUS_SESSION)
+  assert.deepEqual([route.model, route.effort], ['opus', 'xhigh'])
+  const floored = applyPromptFloor(route, answers, 0.6)
+  assert.equal(floored.delegate, true)
+  assert.equal(floored.agentType, ROLE_MECH, 'the agent still stands: delegation_saves and fully_specified named it')
+  assert.equal(floored.model, null, 'naming no model inherits the session, which is the safe direction')
+  assert.equal(floored.effort, null)
+  assert.equal(floored.review, null)
+  assert.match(floored.reason, /not confident enough/)
+})
+
+test('an unsure decisive answer names no route at all, which is not a decision to stay', () => {
+  const answers = { ...promptAnswers(), delegation_saves: { type: 'noul', noul: 0.9, confidence: 0.2 } }
+  const floored = applyPromptFloor(decidePrompt(answers, OPUS_SESSION), answers, 0.6)
+  assert.equal(floored.delegate, null, 'null is nobody decided; false is a decision')
+  assert.equal(floored.source, 'fallback')
+  assert.match(floored.reason, /decided the route/)
+})
+
+test('a confident answer passes through untouched', () => {
+  const answers = promptAnswers({ difficulty: 1.0, confidence: 0.95 })
+  const route = decidePrompt(answers, OPUS_SESSION)
+  assert.deepEqual(applyPromptFloor(route, answers, 0.6), route)
+})
+
+test('the two lists cover every prompt answer, so none escapes the floor unnoticed', () => {
+  assert.deepEqual([...PROMPT_DECISIVE, ...PROMPT_TIERING].sort(), Object.keys(promptAnswers()).sort())
 })

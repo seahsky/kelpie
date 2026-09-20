@@ -99,3 +99,9 @@ For a stage that matches no role, set `model`/`effort` directly on `agent()`, or
 If `CLAUDE_CODE_SUBAGENT_MODEL_FORCE=1` is set (Claude Code v2.1.257+), it overrides every subagent's `model` field — both kelpie roles and the built-in Explore/Plan agents — forcing them onto `CLAUDE_CODE_SUBAGENT_MODEL`, or the session model if that is the only one set.
 Two exceptions still run on the session model regardless: a forked conversation, and a skill run in a subagent with `model: inherit`.
 If a role appears to be running on the wrong model despite correct frontmatter, check this variable and the Claude Code version before assuming kelpie is broken.
+
+## Making this decision happen every time
+
+kelpie ships a `UserPromptSubmit` hook that checks each prompt and injects a compressed form of the policy above when the prompt is delegation-shaped.
+It is off until `/kelpie:delegation-triage` turns it on, per project or per user.
+Turning it on does not change the policy, only when the policy gets read.

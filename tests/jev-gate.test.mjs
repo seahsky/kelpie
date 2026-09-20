@@ -155,9 +155,32 @@ test('jev mode routes each path on its own answers and logs every call', async (
     // Every number the question depends on is computed here, never asked, per the jaggedness page.
     assert.equal(seen[0].state.file_line_count, 2)
     const entries = (await readFile(log, 'utf8')).trim().split('\n').map((line) => JSON.parse(line))
-    assert.equal(entries.length, 1)
-    assert.equal(entries[0].event, 'gated')
-    assert.equal(entries[0].calls.length, 3, 'two paths plus one verify-stage decision')
+    const gated = entries.filter((entry) => entry.event === 'gated')
+    assert.equal(gated.length, 1)
+    assert.equal(gated[0].calls.length, 3, 'two paths plus one verify-stage decision')
+    assert.ok(entries.every((entry) => entry.hook === 'jev-gate' && entry.ts && entry.session_id === 'test-session'))
+
+    // What left the machine, per request, before the call was made.
+    const requests = entries.filter((entry) => entry.event === 'jev_request')
+    assert.equal(requests.length, 3, 'two fan-out requests and one verify request')
+    const forA = requests.find((entry) => entry.path === 'src/a.ts')
+    assert.equal(forA.url, url)
+    assert.equal(forA.excerpt_chars, FILES['src/a.ts'].length)
+    assert.equal(forA.file_line_count, 2)
+    assert.match(forA.excerpt_sha256, /^[0-9a-f]{16}$/)
+    assert.equal(forA.file_excerpt, undefined, 'repository contents stay out of the log unless asked for')
+    assert.deepEqual(forA.questions, ['fully_specified', 'difficulty', 'long_horizon'])
+
+    // One HTTP attempt per request, each with its status and latency.
+    const attempts = entries.filter((entry) => entry.event === 'jev_attempt')
+    assert.equal(attempts.length, 3)
+    assert.ok(attempts.every((entry) => entry.status === 200 && entry.outcome === 'ok' && entry.bytes_sent > 0))
+
+    // And what each answer decided.
+    const decisions = entries.filter((entry) => entry.event === 'jev_decision')
+    assert.equal(decisions.length, 3)
+    assert.equal(decisions.find((entry) => entry.path === 'src/b.ts').decision.model, 'sonnet')
+    assert.ok(decisions.every((entry) => entry.asked === true))
   } finally {
     server.close()
   }
@@ -201,7 +224,14 @@ test('an unreachable Jev falls back to the shipped default and says so in the lo
   assert.equal(gate.byPath['src/a.ts'].model, null)
   assert.equal(gate.verify.agentType, 'kelpie:verifier')
   const entries = (await readFile(log, 'utf8')).trim().split('\n').map((line) => JSON.parse(line))
-  assert.ok(entries[0].calls.every((call) => call.decision.source === 'fallback'))
+  const gated = entries.find((entry) => entry.event === 'gated')
+  assert.ok(gated.calls.every((call) => call.decision.source === 'fallback'))
+  // The attempts are logged even though none of them reached anything, because "we tried three times and the
+  // connection was refused" and "we never called" are different facts about an arm.
+  const attempts = entries.filter((entry) => entry.event === 'jev_attempt')
+  assert.equal(attempts.length, 9, 'three requests at three attempts each')
+  assert.ok(attempts.every((entry) => entry.status === null && entry.outcome === 'error'))
+  assert.ok(entries.filter((entry) => entry.event === 'jev_decision').every((entry) => entry.reason.startsWith('jev unavailable')))
 })
 
 test('jev mode with no key records the misconfiguration rather than silently becoming the static arm', async () => {
@@ -335,7 +365,7 @@ test('a fable session sends its hard spawns down to opus, not back to fable', as
     assert.deepEqual([gate.byPath['src/a.ts'].model, gate.byPath['src/a.ts'].effort], ['opus', 'xhigh'])
     assert.notEqual(gate.byPath['src/a.ts'].model, 'fable', 'fable is never a spawn target, only a session model')
     assert.deepEqual(gate.byPath['src/a.ts'].review, { agentType: 'kelpie:verifier', model: 'opus', effort: 'xhigh' })
-    const entry = JSON.parse((await readFile(log, 'utf8')).trim().split('\n')[0])
+    const entry = (await readFile(log, 'utf8')).trim().split('\n').map((line) => JSON.parse(line)).find((line) => line.event === 'gated')
     assert.equal(entry.session_model, 'fable')
     assert.equal(entry.ceilings.model, 'opus')
     assert.deepEqual(entry.available_models, ['haiku', 'sonnet', 'opus'])

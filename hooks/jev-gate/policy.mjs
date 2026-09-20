@@ -20,11 +20,25 @@ export const ROLE_VERIFIER = 'kelpie:verifier'
 /** The session tier carries no agentType, so the spawn inherits the main session's model and effort. */
 export const ROLE_SESSION = null
 
-/** The stages the gate can reach. A stage is reachable only if the Workflow tool call's args already name its work. */
+// Two agents Claude Code ships, named here because a prompt-level route can reach them and a workflow stage cannot.
+// `Explore` is the recon route: skills/orchestration/SKILL.md says to use it rather than a pinned-cheap finder,
+// because kelpie's own Haiku scout manufactured 84 leads a plain Opus prompt never generated. `general-purpose` is
+// the session-tier route, used where the work is real work but nothing supports moving it off the session's model.
+export const ROLE_EXPLORE = 'Explore'
+export const ROLE_GENERAL = 'general-purpose'
+
+/**
+ * The stages the gate can reach.
+ *
+ * The three workflow stages are reachable only if the Workflow tool call's args already name their work. `prompt` is
+ * the fourth and it is not a workflow stage at all: it is one prompt, decided at UserPromptSubmit before any tool has
+ * run, which is the only point where the answer can still be "delegate this" rather than "tier this spawn".
+ */
 export const STAGES = {
   AUDIT_FIND: 'audit.find',
   AUDIT_VERIFY: 'audit.verify',
   MIGRATE_APPLY: 'migrate.apply',
+  PROMPT: 'prompt',
 }
 
 export class PolicyError extends Error {}
@@ -108,6 +122,10 @@ export const staticDecision = (stage) => {
       return { agentType: ROLE_VERIFIER, model: null, effort: null, review: null, source: 'static', reason: 'shipped default: verifier role' }
     case STAGES.MIGRATE_APPLY:
       return { agentType: ROLE_MECH, model: null, effort: null, review: null, source: 'static', reason: 'shipped default: mech-executor role' }
+    case STAGES.PROMPT:
+      // A prompt has no shipped pin to fall back to, so the fallback is naming no route and letting the mode's own
+      // note stand. `delegate: null` is that: not "do not delegate", which is a decision, but "nobody decided".
+      return { agentType: ROLE_SESSION, delegate: null, model: null, effort: null, review: null, source: 'static', reason: 'no route named, so the mode note stands' }
     default:
       throw new PolicyError(`${stage} is not a Stage 4 gate stage`)
   }
@@ -238,6 +256,135 @@ export const decideVerify = (answers) => {
   return needsReasoning < NOUL_MIDPOINT
     ? { agentType: ROLE_VERIFIER, model: 'haiku', effort: null, source: 'jev', reason: `pattern-visible (verify_needs_reasoning ${needsReasoning}); haiku takes no effort parameter` }
     : { agentType: ROLE_VERIFIER, model: 'sonnet', effort: 'medium', source: 'jev', reason: `needs reading (verify_needs_reasoning ${needsReasoning})` }
+}
+
+/**
+ * Turn one prompt's answers into a route, for the delegation triage in prefer mode.
+ *
+ * This is the same two ladders the fan-out stages run on, entered one question earlier. `delegation_saves` is the new
+ * one, and it is the whole inversion prefer mode asks for: the work is delegated unless doing all of it in this
+ * session costs less. Every other mode asks the opposite question and answers it "stay here" by default, which is
+ * right on the 180 of 180 measured prompts where the main thread won. prefer mode is the opt-in where it is not.
+ *
+ * The route then falls out of the remaining four answers:
+ *
+ *   saves false            -> stay in this session. The one case prefer mode does not delegate
+ *   read-only              -> built-in Explore, inheriting the session tier
+ *   an open decision left  -> general-purpose at the session tier, after the decision is resolved here
+ *   mechanical             -> kelpie:mech-executor, haiku, no effort
+ *   moderate               -> kelpie:mech-executor, sonnet, medium
+ *   hard                   -> kelpie:mech-executor, sonnet, high
+ *   hard and long-horizon  -> kelpie:mech-executor, the top reachable rung, xhigh
+ *
+ * Under-specified work names no model on purpose. skills/orchestration/SKILL.md scopes the sonnet pin on
+ * `mech-executor` to fully-specified work and states the reason: "On open-ended work the same tier fails expensively
+ * rather than cheaply, so the 'no open decisions left' bar in the role's description is load-bearing." So an open
+ * decision costs the route its tiering, not its delegation: the decision is resolved in this session, and what is
+ * handed out afterwards runs at the session's own model.
+ *
+ * The review gate runs on every route, this session's own work included. A hard, long job checked only by whoever
+ * did it is the self-certification blind spot SKILL.md names, and that does not stop being true because nothing was
+ * spawned.
+ *
+ * An unresolved session model is handled differently here than in the spawn gate. There, no known ceiling means no
+ * route can be shown to be downward, so the gate emits nothing. Here, going quiet on an unresolved model would make
+ * the triage silent on the first prompt of every session, before any assistant turn has been written to the
+ * transcript to read a model from. So the route is named and no model is: a route that names no model inherits the
+ * session's, which cannot be above it.
+ */
+export const decidePrompt = (answers, ceilings) => {
+  const saves = answers.delegation_saves?.noul
+  const readOnly = answers.read_only?.noul
+  const specified = answers.fully_specified?.noul
+  const difficulty = answers.difficulty?.score
+  const longHorizon = answers.long_horizon?.noul
+  for (const [id, value] of [['delegation_saves.noul', saves], ['read_only.noul', readOnly], ['fully_specified.noul', specified], ['difficulty.score', difficulty], ['long_horizon.noul', longHorizon]]) {
+    if (typeof value !== 'number' || Number.isNaN(value)) {
+      throw new PolicyError(`${STAGES.PROMPT}: answers must carry a numeric ${id}`)
+    }
+  }
+  if (!ceilings) throw new PolicyError(`${STAGES.PROMPT}: ceilings must be given, even with a null model in them`)
+  const review = decideReview(difficulty, longHorizon, ceilings)
+  const rung = (model) => (ceilings.model === null ? null : model)
+  // `saves` rides along on every route, because it is the answer that decided whether there is a route at all and
+  // the note says so rather than making the reader take the verdict on trust.
+  const route = (fields) => ({ delegate: true, saves, review, source: 'jev', ...fields })
+  if (saves < NOUL_MIDPOINT) {
+    return { delegate: false, saves, agentType: ROLE_SESSION, model: null, effort: null, review, source: 'jev', reason: `doing all of it in this session costs less than splitting it (delegation_saves ${saves})` }
+  }
+  if (readOnly >= NOUL_MIDPOINT) {
+    return route({ agentType: ROLE_EXPLORE, model: null, effort: null, reason: `read-only recon (read_only ${readOnly})` })
+  }
+  if (specified < NOUL_MIDPOINT) {
+    return route({
+      agentType: ROLE_GENERAL,
+      model: null,
+      effort: null,
+      precondition: 'Resolve every open decision here first',
+      reason: `an open decision is left in it (fully_specified ${specified})`,
+    })
+  }
+  if (difficulty < SCORE_MECHANICAL) {
+    return route({ agentType: ROLE_MECH, model: rung('haiku'), effort: null, reason: `mechanical (difficulty ${difficulty})` })
+  }
+  if (difficulty < SCORE_MODERATE) {
+    return route({ agentType: ROLE_MECH, model: rung('sonnet'), effort: 'medium', reason: `moderate (difficulty ${difficulty})` })
+  }
+  if (longHorizon < NOUL_MIDPOINT) {
+    return route({ agentType: ROLE_MECH, model: rung('sonnet'), effort: 'high', reason: `hard (difficulty ${difficulty}, long_horizon ${longHorizon})` })
+  }
+  return route({ agentType: ROLE_MECH, model: rung(ceilings.model), effort: 'xhigh', reason: `hard and long-horizon (difficulty ${difficulty}, long_horizon ${longHorizon})` })
+}
+
+/**
+ * Which prompt answers decide whether there is a route, and which only decide how it is tiered.
+ *
+ * The split exists because the flat floor threw away a verdict it had no business judging. Measured on the first
+ * real call: `delegation_saves` came back 0.2, which settles the route on its own and never reaches the rung table,
+ * and `difficulty` came back 1.68 at confidence 0.52. The flat floor took the lowest confidence across all five
+ * answers, found the 0.52, and discarded the whole decision, so the arm paid a round trip and fell back to the note
+ * it would have had with no key at all.
+ *
+ * A Noul carries no confidence field, so in practice the decisive list never trips the floor today. It is listed
+ * anyway, because the rule is about which answer is load-bearing rather than about which type happens to report a
+ * confidence.
+ */
+export const PROMPT_DECISIVE = ['delegation_saves', 'read_only', 'fully_specified']
+export const PROMPT_TIERING = ['difficulty', 'long_horizon']
+
+const lowestConfidence = (answers, ids) => {
+  const seen = ids
+    .map((id) => answers[id])
+    .map((answer) => (answer && typeof answer.confidence === 'number' ? answer.confidence : null))
+    .filter((value) => value !== null)
+  return seen.length > 0 ? Math.min(...seen) : null
+}
+
+/**
+ * The confidence floor for a prompt route, applied per answer rather than across all of them.
+ *
+ * An unsure decisive answer means no route, and the mode's own note is a better answer than a route nobody stands
+ * behind. An unsure tiering answer costs the route its rung and its review, not its delegation: the route still
+ * names an agent, and a route that names no model inherits the session's, which is the safe direction.
+ */
+export const applyPromptFloor = (decision, answers, floor) => {
+  if (decision.delegate === null) return decision
+  const decisive = lowestConfidence(answers, PROMPT_DECISIVE)
+  if (decisive !== null && decisive < floor) {
+    return { ...staticDecision(STAGES.PROMPT), source: 'fallback', reason: `confidence ${decisive} below floor ${floor} on an answer that decided the route` }
+  }
+  const tiering = lowestConfidence(answers, PROMPT_TIERING)
+  if (tiering !== null && tiering < floor) {
+    return {
+      ...decision,
+      model: null,
+      effort: null,
+      review: null,
+      tiering_declined: `confidence ${tiering} below floor ${floor}`,
+      reason: `${decision.reason}; the difficulty answer was not confident enough to act on, so no tier or review is named`,
+    }
+  }
+  return decision
 }
 
 /**
