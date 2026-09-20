@@ -1,5 +1,17 @@
 {
+  "description": "kelpie: an optional per-spawn gate on Workflow calls, and an optional delegation triage on prompts. Both are off until configured.",
   "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}\"/hooks/delegation-triage/triage.mjs",
+            "timeout": 20
+          }
+        ]
+      }
+    ],
     "PreToolUse": [
       {
         "matcher": "Workflow",

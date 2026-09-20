@@ -10,8 +10,12 @@ import { join, relative } from 'node:path'
 
 const GATE = new URL('../hooks/jev-gate/gate.mjs', import.meta.url).pathname
 
+// Cleared before the caller's own, so the suite cannot reach TypeSafe because a key happened to be exported in the
+// shell. Every test that wants the gate on sets both a key and a stub URL.
+const CLEARED = { CLAUDE_PLUGIN_OPTION_JEV_API_KEY: '', KELPIE_GATE_MODE: '', KELPIE_GATE_LOG: '', KELPIE_LOG: '', KELPIE_LOG_EXCERPTS: '' }
+
 const runGate = (event, env) => new Promise((resolve, reject) => {
-  const child = execFile(process.execPath, [GATE], { env: { ...process.env, ...env } }, (error, stdout, stderr) => {
+  const child = execFile(process.execPath, [GATE], { env: { ...process.env, ...CLEARED, ...env } }, (error, stdout, stderr) => {
     if (error) reject(new Error(`${error.message}\n${stderr}`))
     else resolve(stdout.trim())
   })
@@ -155,9 +159,32 @@ test('jev mode routes each path on its own answers and logs every call', async (
     // Every number the question depends on is computed here, never asked, per the jaggedness page.
     assert.equal(seen[0].state.file_line_count, 2)
     const entries = (await readFile(log, 'utf8')).trim().split('\n').map((line) => JSON.parse(line))
-    assert.equal(entries.length, 1)
-    assert.equal(entries[0].event, 'gated')
-    assert.equal(entries[0].calls.length, 3, 'two paths plus one verify-stage decision')
+    const gated = entries.filter((entry) => entry.event === 'gated')
+    assert.equal(gated.length, 1)
+    assert.equal(gated[0].calls.length, 3, 'two paths plus one verify-stage decision')
+    assert.ok(entries.every((entry) => entry.hook === 'jev-gate' && entry.ts && entry.session_id === 'test-session'))
+
+    // What left the machine, per request, before the call was made.
+    const requests = entries.filter((entry) => entry.event === 'jev_request')
+    assert.equal(requests.length, 3, 'two fan-out requests and one verify request')
+    const forA = requests.find((entry) => entry.path === 'src/a.ts')
+    assert.equal(forA.url, url)
+    assert.equal(forA.excerpt_chars, FILES['src/a.ts'].length)
+    assert.equal(forA.file_line_count, 2)
+    assert.match(forA.excerpt_sha256, /^[0-9a-f]{16}$/)
+    assert.equal(forA.file_excerpt, undefined, 'repository contents stay out of the log unless asked for')
+    assert.deepEqual(forA.questions, ['fully_specified', 'difficulty', 'long_horizon'])
+
+    // One HTTP attempt per request, each with its status and latency.
+    const attempts = entries.filter((entry) => entry.event === 'jev_attempt')
+    assert.equal(attempts.length, 3)
+    assert.ok(attempts.every((entry) => entry.status === 200 && entry.outcome === 'ok' && entry.bytes_sent > 0))
+
+    // And what each answer decided.
+    const decisions = entries.filter((entry) => entry.event === 'jev_decision')
+    assert.equal(decisions.length, 3)
+    assert.equal(decisions.find((entry) => entry.path === 'src/b.ts').decision.model, 'sonnet')
+    assert.ok(decisions.every((entry) => entry.asked === true))
   } finally {
     server.close()
   }
@@ -201,7 +228,68 @@ test('an unreachable Jev falls back to the shipped default and says so in the lo
   assert.equal(gate.byPath['src/a.ts'].model, null)
   assert.equal(gate.verify.agentType, 'kelpie:verifier')
   const entries = (await readFile(log, 'utf8')).trim().split('\n').map((line) => JSON.parse(line))
-  assert.ok(entries[0].calls.every((call) => call.decision.source === 'fallback'))
+  const gated = entries.find((entry) => entry.event === 'gated')
+  assert.ok(gated.calls.every((call) => call.decision.source === 'fallback'))
+  // The attempts are logged even though none of them reached anything, because "we tried three times and the
+  // connection was refused" and "we never called" are different facts about an arm.
+  const attempts = entries.filter((entry) => entry.event === 'jev_attempt')
+  assert.equal(attempts.length, 9, 'three requests at three attempts each')
+  assert.ok(attempts.every((entry) => entry.status === null && entry.outcome === 'error'))
+  assert.ok(entries.filter((entry) => entry.event === 'jev_decision').every((entry) => entry.reason.startsWith('jev unavailable')))
+})
+
+test('a body that is not JSON is one retryable attempt, not two records saying different things', async () => {
+  // A 200 carrying junk makes response.json() reject with a SyntaxError, which is not a JevError. The inner catch
+  // recorded it as `terminal` and re-threw, the outer catch recorded it again as `error`, and the call was then
+  // retried. So one HTTP attempt produced two lines, labelled terminal, and the retry happened anyway. Every count
+  // taken from this log doubled.
+  const cwd = await workspace(FILES)
+  const log = join(cwd, 'gate.jsonl')
+  const { server, url } = await new Promise((resolve) => {
+    const s = createServer((req, res) => {
+      req.on('data', () => {})
+      req.on('end', () => {
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end('not json at all')
+      })
+    })
+    s.listen(0, '127.0.0.1', () => resolve({ server: s, url: `http://127.0.0.1:${s.address().port}/v1/systemone` }))
+  })
+  try {
+    await runGate(auditEvent(cwd, await transcript(cwd, 'claude-opus-5')), {
+      CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'test-key',
+      KELPIE_GATE_JEV_URL: url,
+      KELPIE_GATE_LOG: log,
+      KELPIE_GATE_REQUEST_MS: '500',
+    })
+  } finally {
+    server.close()
+  }
+  const entries = (await readFile(log, 'utf8')).trim().split('\n').map((line) => JSON.parse(line))
+  const attempts = entries.filter((entry) => entry.event === 'jev_attempt')
+  assert.equal(attempts.length, 9, 'three requests at three attempts each, one line per attempt')
+  assert.ok(attempts.every((entry) => entry.status === 200), 'the server did answer, so the status is not null')
+  assert.ok(attempts.every((entry) => entry.outcome === 'retryable'), 'it was retried, so it cannot be logged as terminal')
+})
+
+test('a 200 whose answers are unreadable is terminal, and is recorded once as terminal', async () => {
+  // The other half of the pair: parseAnswers raises a terminal JevError, so this one really does end the call.
+  const cwd = await workspace(FILES)
+  const log = join(cwd, 'gate.jsonl')
+  const { server, url } = await stubServer(() => ({ status: 200, payload: { answers: { difficulty: { type: 'score' } } } }))
+  try {
+    await runGate(auditEvent(cwd, await transcript(cwd, 'claude-opus-5')), {
+      CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'test-key',
+      KELPIE_GATE_JEV_URL: url,
+      KELPIE_GATE_LOG: log,
+    })
+  } finally {
+    server.close()
+  }
+  const entries = (await readFile(log, 'utf8')).trim().split('\n').map((line) => JSON.parse(line))
+  const attempts = entries.filter((entry) => entry.event === 'jev_attempt')
+  assert.equal(attempts.length, 3, 'one attempt per request, and no retry after a terminal answer')
+  assert.ok(attempts.every((entry) => entry.outcome === 'terminal'))
 })
 
 test('jev mode with no key records the misconfiguration rather than silently becoming the static arm', async () => {
@@ -335,7 +423,7 @@ test('a fable session sends its hard spawns down to opus, not back to fable', as
     assert.deepEqual([gate.byPath['src/a.ts'].model, gate.byPath['src/a.ts'].effort], ['opus', 'xhigh'])
     assert.notEqual(gate.byPath['src/a.ts'].model, 'fable', 'fable is never a spawn target, only a session model')
     assert.deepEqual(gate.byPath['src/a.ts'].review, { agentType: 'kelpie:verifier', model: 'opus', effort: 'xhigh' })
-    const entry = JSON.parse((await readFile(log, 'utf8')).trim().split('\n')[0])
+    const entry = (await readFile(log, 'utf8')).trim().split('\n').map((line) => JSON.parse(line)).find((line) => line.event === 'gated')
     assert.equal(entry.session_model, 'fable')
     assert.equal(entry.ceilings.model, 'opus')
     assert.deepEqual(entry.available_models, ['haiku', 'sonnet', 'opus'])

@@ -24,10 +24,11 @@
 // that a route is downward, so it emits nothing and records why.
 
 import { readFileSync, realpathSync } from 'node:fs'
-import { appendFileSync } from 'node:fs'
 import { resolve, sep } from 'node:path'
 import { STAGES, applyConfidenceFloor, availableModels, clampDecision, decideFanout, decideVerify, modelCeiling, staticDecision } from './policy.mjs'
 import { JEV_MODEL, JEV_URL, askJev, fanoutRequest, verifyRequest } from './jev.mjs'
+import { fingerprint, logger, resolveLogPath, resolveVerbosity } from '../log.mjs'
+import { num, str } from '../env.mjs'
 import { resolveSession } from './session.mjs'
 
 const env = process.env
@@ -41,26 +42,23 @@ const MODE = env.KELPIE_GATE_MODE || (API_KEY ? 'jev' : 'off')
 // Empty means "read it from the session", which is the path a real install takes. A benchmark arm sets it, because an
 // arm's main session model is a fact of the schedule and should not depend on parsing a transcript.
 const MODEL_CEILING_OVERRIDE = env.KELPIE_GATE_MODEL_CEILING ?? ''
-const EFFORT_CEILING = env.KELPIE_GATE_EFFORT_CEILING ?? 'xhigh'
-const CONFIDENCE_FLOOR = Number(env.KELPIE_GATE_CONFIDENCE_FLOOR ?? '0.6')
-const BUDGET_MS = Number(env.KELPIE_GATE_BUDGET_MS ?? '45000')
-const REQUEST_MS = Number(env.KELPIE_GATE_REQUEST_MS ?? '5000')
+const EFFORT_CEILING = str(env.KELPIE_GATE_EFFORT_CEILING, 'xhigh')
+const CONFIDENCE_FLOOR = num(env.KELPIE_GATE_CONFIDENCE_FLOOR, 0.6)
+const BUDGET_MS = num(env.KELPIE_GATE_BUDGET_MS, 45000)
+const REQUEST_MS = num(env.KELPIE_GATE_REQUEST_MS, 5000)
 // Sized against the documented 1,200 requests per minute for jev-1.13.0: at the slow end of the published cookbook
 // timings (0.31 s), two in flight is about 400 requests per minute, leaving room for other sessions on the same key.
-const CONCURRENCY = Number(env.KELPIE_GATE_CONCURRENCY ?? '2')
-const LOG_PATH = env.KELPIE_GATE_LOG ?? ''
+const CONCURRENCY = num(env.KELPIE_GATE_CONCURRENCY, 2)
 // Overridable so the gate can be tested end to end against a local server without reaching TypeSafe.
-const API_URL = env.KELPIE_GATE_JEV_URL ?? JEV_URL
-const API_MODEL = env.KELPIE_GATE_JEV_MODEL ?? JEV_MODEL
+const API_URL = str(env.KELPIE_GATE_JEV_URL, JEV_URL)
+const API_MODEL = str(env.KELPIE_GATE_JEV_MODEL, JEV_MODEL)
 
-const record = (entry) => {
-  if (!LOG_PATH) return
-  try {
-    appendFileSync(LOG_PATH, `${JSON.stringify(entry)}\n`)
-  } catch {
-    // A gate that fails because it could not write its own log would change the arm. Losing the log is the lesser harm.
-  }
-}
+// KELPIE_GATE_LOG still wins where it is set, because configurations use it. KELPIE_LOG and the config file's `log`
+// key put the gate's calls and the triage's decisions in one file, which is where they are worth reading together.
+const VERBOSITY = resolveVerbosity({ env })
+// Bound from the environment at load so a failure before the event is parsed is still recorded, then rebound once
+// the event names a working directory, since a project-scoped log path can only be found from there.
+let record = logger({ path: resolveLogPath({ env, override: env.KELPIE_GATE_LOG ?? '' }).path, base: { hook: 'jev-gate' } })
 
 const readStdin = async () => {
   const chunks = []
@@ -89,18 +87,56 @@ const mapLimit = async (items, limit, worker) => {
   return results
 }
 
-const askOrFallback = async ({ stage, request, apiKey, decide, deadline }) => {
+/**
+ * What this call is about to put on the wire, recorded before it goes.
+ *
+ * The gate's one genuinely consequential side effect is that it uploads an excerpt of a file from the user's
+ * repository to a third party, from a PreToolUse hook, before the user can decline the call. So the path, the size
+ * and a hash of exactly what was sent are logged whether or not the call then succeeds. The excerpt's own text is
+ * written only when `KELPIE_LOG_EXCERPTS` asks for it, because a log of repository contents is repository contents.
+ */
+const recordRequest = ({ stage, path, request }) => {
+  const sent = request?.state?.file_excerpt
+  record({
+    event: 'jev_request',
+    stage,
+    path,
+    url: API_URL,
+    jev_model: request?.model ?? null,
+    questions: Object.keys(request?.questions ?? {}),
+    state_keys: Object.keys(request?.state ?? {}),
+    file_line_count: request?.state?.file_line_count ?? null,
+    excerpt_chars: typeof sent === 'string' ? sent.length : null,
+    excerpt_lines: typeof sent === 'string' ? sent.split('\n').length : null,
+    excerpt_sha256: fingerprint(sent),
+    ...(VERBOSITY.excerpts && typeof sent === 'string' ? { file_excerpt: sent } : {}),
+  })
+}
+
+const askOrFallback = async ({ stage, request, apiKey, decide, deadline, path = null }) => {
   const started = Date.now()
   if (Date.now() > deadline) {
-    return { decision: { ...staticDecision(stage), source: 'fallback', reason: 'gate budget spent' }, ms: 0, answers: null }
+    const decision = { ...staticDecision(stage), source: 'fallback', reason: 'gate budget spent' }
+    record({ event: 'jev_decision', stage, path, ms: 0, asked: false, reason: decision.reason, decision })
+    return { decision, ms: 0, answers: null }
   }
+  recordRequest({ stage, path, request })
   try {
-    const answers = await askJev({ request, apiKey, url: API_URL, perRequestTimeoutMs: Math.min(REQUEST_MS, deadline - Date.now()) })
+    const answers = await askJev({
+      request,
+      apiKey,
+      url: API_URL,
+      perRequestTimeoutMs: Math.min(REQUEST_MS, deadline - Date.now()),
+      onAttempt: (attempt) => record({ event: 'jev_attempt', stage, path, ...attempt }),
+    })
     const decided = applyConfidenceFloor(stage, decide(answers), answers, CONFIDENCE_FLOOR)
+    record({ event: 'jev_decision', stage, path, ms: Date.now() - started, asked: true, answers, decision: decided })
     return { decision: decided, ms: Date.now() - started, answers }
   } catch (error) {
     const reason = `jev unavailable: ${error && error.message ? error.message : String(error)}`
-    return { decision: { ...staticDecision(stage), source: 'fallback', reason }, ms: Date.now() - started, answers: null }
+    const decision = { ...staticDecision(stage), source: 'fallback', reason }
+    record({ event: 'jev_decision', stage, path, ms: Date.now() - started, asked: true, answers: null, reason, decision })
+    return { decision, ms: Date.now() - started, answers: null }
   }
 }
 
@@ -145,10 +181,12 @@ const gateAudit = async ({ args, cwd, apiKey, deadline, ceilings }) => {
     if (MODE !== 'jev') return { path, ...{ decision: staticDecision(fanoutStage), ms: 0, answers: null } }
     const read = readInside(cwd, path)
     if (read.reason) {
+      // A refused read is a file that was named and not uploaded, which is the containment check doing its job.
+      record({ event: 'file_skipped', stage: fanoutStage, path, reason: read.reason })
       return { path, decision: { ...staticDecision(fanoutStage), source: 'fallback', reason: read.reason }, ms: 0, answers: null }
     }
     const request = fanoutRequest({ work: args.concern, path, contents: read.contents, model: API_MODEL })
-    return { path, ...(await askOrFallback({ stage: fanoutStage, request, apiKey, decide: (a) => decideFanout(fanoutStage, a, ceilings), deadline })) }
+    return { path, ...(await askOrFallback({ stage: fanoutStage, request, apiKey, path, decide: (a) => decideFanout(fanoutStage, a, ceilings), deadline })) }
   })
   const verify = MODE !== 'jev'
     ? { decision: staticDecision(STAGES.AUDIT_VERIFY), ms: 0, answers: null }
@@ -173,10 +211,11 @@ const gateMigrate = async ({ args, cwd, apiKey, deadline, ceilings }) => {
     if (MODE !== 'jev') return { path, decision: staticDecision(stage), ms: 0, answers: null }
     const read = readInside(cwd, path)
     if (read.reason) {
+      record({ event: 'file_skipped', stage, path, reason: read.reason })
       return { path, decision: { ...staticDecision(stage), source: 'fallback', reason: read.reason }, ms: 0, answers: null }
     }
     const request = fanoutRequest({ work: args.transformation, path, contents: read.contents, model: API_MODEL })
-    return { path, ...(await askOrFallback({ stage, request, apiKey, decide: (a) => decideFanout(stage, a, ceilings), deadline })) }
+    return { path, ...(await askOrFallback({ stage, request, apiKey, path, decide: (a) => decideFanout(stage, a, ceilings), deadline })) }
   })
   return {
     byPath: Object.fromEntries(perPath.map((r) => [r.path, clampDecision(r.decision, ceilings)])),
@@ -187,6 +226,10 @@ const gateMigrate = async ({ args, cwd, apiKey, deadline, ceilings }) => {
 
 const main = async () => {
   const event = JSON.parse(await readStdin())
+  record = logger({
+    path: resolveLogPath({ env, cwd: event.cwd ?? '', override: env.KELPIE_GATE_LOG ?? '' }).path,
+    base: { hook: 'jev-gate', session_id: event.session_id ?? null, cwd: event.cwd ?? null },
+  })
   if (event.tool_name !== 'Workflow') return null
   // The default for an unconfigured kelpie. Emitting nothing leaves the Workflow call exactly as the model wrote it,
   // and the workflows then use the pins in their roles' frontmatter, which is kelpie's behaviour without a gate.

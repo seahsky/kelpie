@@ -104,6 +104,95 @@ export const verifyRequest = ({ concern, pathCount, model = JEV_MODEL }) => ({
   questions: { verify_needs_reasoning: VERIFY_NEEDS_REASONING },
 })
 
+// The prompt-level questions, asked by the delegation triage in prefer mode before the turn starts.
+//
+// They are separate wordings rather than the fan-out set reused, because the fan-out set is about one named file and
+// at UserPromptSubmit no file has been named yet: nothing has been read, nothing has been searched, and `task` is all
+// there is. A question that asks about `file_excerpt` when state carries none is a question answered against nothing.
+//
+// The pair that decides the route is DELEGATION_SAVES and READ_ONLY. The other three are the same two ladders the
+// spawn gate already runs on: difficulty picks the rung, and long_horizon with difficulty decides the review.
+
+/**
+ * Whether splitting the work is cheaper than doing all of it in the session that was asked.
+ *
+ * This is the question prefer mode turns on, so it is worded as the thing that actually drives the cost rather than
+ * as a cost estimate. Delegation is cheap when the parts do not need each other, because then each worker carries
+ * only its own part of the conversation; it is expensive when they do, because the hand-offs re-send what the last
+ * worker already knew. kelpie's own Stage 2 run measured the expensive direction at 6.37x for the same pass rate.
+ */
+const DELEGATION_SAVES = {
+  type: 'noul',
+  instructions: 'The work in `task` costs less when it is split across several workers that run separately than when one engineer does all of it in one sitting. `paths_named` is how many file paths `task` writes out.',
+  criteria: {
+    true: 'The work has parts that can be done independently, and no part needs to know what another part found.',
+    false: 'The work is one piece, or each part needs what the part before it found, so splitting it adds hand-offs without removing any.',
+  },
+}
+
+/** Read-only work has its own route, because Claude Code ships an agent for it and kelpie's own measurement says to use that one. */
+const READ_ONLY = {
+  type: 'noul',
+  instructions: '`task` asks only for information: finding, listing, locating, reading, or explaining. Nothing is written.',
+  criteria: {
+    true: 'Answering it means reading and reporting back. No file is created or changed.',
+    false: 'It asks for at least one file to be written, changed, created, or deleted.',
+  },
+}
+
+const TASK_FULLY_SPECIFIED = {
+  type: 'noul',
+  instructions: '`task` states exactly what to do. Whoever does it has no design, naming, or approach decision left to make.',
+  criteria: {
+    true: 'The task names the exact change to make and says where it applies.',
+    false: 'The task leaves at least one decision to whoever does it, or does not say which of several approaches to take.',
+  },
+}
+
+const TASK_DIFFICULTY = {
+  type: 'score',
+  instructions: 'Rate how much reasoning it takes to do the work in `task` correctly.',
+  criteria: [
+    'Mechanical. The work is a pattern to match and rewrite, and `task` says where it applies.',
+    'Moderate. The work is clear, but doing it correctly means following how the code already uses the thing being changed.',
+    'Hard. Doing it correctly means reasoning about behaviour that has to be worked out from the code first.',
+  ],
+}
+
+/** Same thirty-minute threshold as LONG_HORIZON, asked about the whole task rather than about one file of it. */
+const TASK_LONG_HORIZON = {
+  type: 'noul',
+  instructions: 'The work in `task` is a long job: more than about thirty minutes of continuous work for an engineer who already knows this code.',
+  criteria: {
+    true: 'The work reaches many places, or each place it reaches needs its own decision, so it runs well past half an hour.',
+    false: 'The work is a handful of edits that an engineer who knows the code finishes well inside half an hour.',
+  },
+}
+
+/**
+ * One request for one prompt. Five questions, one call, because the triage sits on the blocking path of the turn.
+ *
+ * `paths_named` is counted by the caller for the same reason `file_line_count` is: the jaggedness page states that
+ * Jev does not count reliably and that the error grows with the number. It is in state because DELEGATION_SAVES
+ * names it, not as background.
+ *
+ * The prompt is excerpted to the same budget as a file, so a pasted stack trace cannot push state past 32k.
+ */
+export const promptRequest = ({ task, pathsNamed = 0, model = JEV_MODEL }) => ({
+  model,
+  state: {
+    task: excerpt(typeof task === 'string' ? task : ''),
+    paths_named: pathsNamed,
+  },
+  questions: {
+    delegation_saves: DELEGATION_SAVES,
+    read_only: READ_ONLY,
+    fully_specified: TASK_FULLY_SPECIFIED,
+    difficulty: TASK_DIFFICULTY,
+    long_horizon: TASK_LONG_HORIZON,
+  },
+})
+
 /** Reject a malformed body rather than letting a missing field read as a confident zero downstream. */
 export const parseAnswers = (body) => {
   if (!body || typeof body !== 'object' || !body.answers || typeof body.answers !== 'object') {
@@ -127,26 +216,70 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
  * `perRequestTimeoutMs` exists because TypeSafe publishes no latency SLA; the only public per-call figures are
  * cookbook timings of 0.09 s to 0.31 s, which is one run rather than a commitment. A gate that can hang is a gate
  * that changes the arm it is supposed to measure, so it gets a deadline and a fallback instead of trust.
+ *
+ * `onAttempt` is called exactly once per HTTP attempt, before the retry decision, with the status, the latency and
+ * the bytes that went out. It exists because a retried call and a first-time success are the same thing from the
+ * outside, and a gate that sends a repository's contents to a third party should be able to say how many times it
+ * did so and what came back. Once per attempt is the load-bearing part: the counts in the decision log are taken
+ * straight from these lines. It never affects control flow, and a callback that throws is ignored.
  */
-export const askJev = async ({ request, apiKey, perRequestTimeoutMs, url = JEV_URL, maxAttempts = 3, fetchImpl = fetch, sleepImpl = sleep }) => {
+export const askJev = async ({ request, apiKey, perRequestTimeoutMs, url = JEV_URL, maxAttempts = 3, fetchImpl = fetch, sleepImpl = sleep, onAttempt = null }) => {
   let lastError = null
+  const body = JSON.stringify(request)
+  const note = (entry) => {
+    if (!onAttempt) return
+    try {
+      onAttempt({ url, bytes_sent: Buffer.byteLength(body), ...entry })
+    } catch {
+      // The log never decides whether a request is retried.
+    }
+  }
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    // One HTTP attempt must produce exactly one record, or the log cannot be used to count what was sent. A body
+    // that would not parse as JSON used to produce two: the inner catch wrote one, then the outer catch wrote
+    // another, because a SyntaxError is not a JevError and fell through. The same bug labelled that attempt
+    // `terminal` and then retried it.
+    let recorded = false
+    const record = (entry) => {
+      recorded = true
+      note(entry)
+    }
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), perRequestTimeoutMs)
+    const started = Date.now()
     try {
       const response = await fetchImpl(url, {
         method: 'POST',
         headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify(request),
+        body,
         signal: controller.signal,
       })
-      if (response.ok) return parseAnswers(await response.json())
+      if (response.ok) {
+        // Noted around the parse, not after it, so a 200 carrying a body this cannot read is still recorded as a
+        // call that was made and answered.
+        try {
+          const answers = parseAnswers(await response.json())
+          record({ attempt, status: response.status, ms: Date.now() - started, outcome: 'ok' })
+          return answers
+        } catch (error) {
+          // The outcome follows what happens next, not what threw. parseAnswers raises a terminal JevError and ends
+          // it here; anything else, a body that is not JSON above all, is retried and must say so.
+          const terminal = error instanceof JevError && error.terminal
+          record({ attempt, status: response.status, ms: Date.now() - started, outcome: terminal ? 'terminal' : 'retryable', error: error.message })
+          throw error
+        }
+      }
       const detail = `HTTP ${response.status}`
-      if (TERMINAL_STATUSES.has(response.status)) throw new JevError(detail, { terminal: true })
+      const terminal = TERMINAL_STATUSES.has(response.status)
+      record({ attempt, status: response.status, ms: Date.now() - started, outcome: terminal ? 'terminal' : 'retryable', error: detail })
+      if (terminal) throw new JevError(detail, { terminal: true })
       lastError = new JevError(detail)
     } catch (error) {
       if (error instanceof JevError && error.terminal) throw error
       lastError = error instanceof JevError ? error : new JevError(String(error && error.message ? error.message : error))
+      // Only the failures that never got as far as a response land here. Anything the block above already recorded
+      // re-throws through this catch, and recording it twice would double every count taken from the log.
+      if (!recorded) record({ attempt, status: null, ms: Date.now() - started, outcome: 'error', error: lastError.message })
     } finally {
       clearTimeout(timer)
     }
