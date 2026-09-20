@@ -1,8 +1,8 @@
 {
   "name": "kelpie",
   "displayName": "Kelpie",
-  "version": "0.1.0",
-  "description": "Delegation policy for Claude Code, cut down to what its own benchmark supports: two pinned roles, and a skill that argues against delegating by default.",
+  "version": "0.2.0",
+  "description": "Delegation policy for Claude Code, cut down to what its own benchmark supports: two pinned roles, a skill that argues against delegating by default, and an optional hook that puts that decision on every prompt.",
   "author": {
     "name": "seahsky"
   },
@@ -21,7 +21,7 @@
     "jev_api_key": {
       "type": "string",
       "title": "Jev API key (optional)",
-      "description": "Leave empty unless you want the experimental spawn gate. With a key, kelpie sends an excerpt of each file named in a gated Workflow call (up to 120 lines or 6000 characters), plus its path, to TypeSafe AI's Jev, and uses the answer to pick that spawn's role, model, and effort instead of the fixed pins in each role's frontmatter. Files outside the working directory are never read or sent. Without a key the gate emits nothing and kelpie behaves exactly as it does today. Nothing in kelpie's measured results depends on this, and the experiment that would judge it has not been run.",
+      "description": "Leave empty unless you want the two experimental features that need it. A key sends data to TypeSafe AI's Jev, and it turns on two flows. The spawn gate sends an excerpt of each file named in a gated Workflow call (up to 120 lines or 6000 characters) plus its path, and uses the answer to pick that spawn's role, model, and effort instead of the fixed pins in each role's frontmatter; files outside the working directory are never read or sent. Separately, if the delegation triage is in prefer mode, the text of every prompt it reads is sent before the turn starts, and the answer names one route: slash commands and the notices Claude Code generates itself are never sent, and KELPIE_TRIAGE_CONSULT=off keeps prefer mode while keeping prompts off the wire. Without a key both emit nothing and kelpie behaves exactly as it does without one. Nothing in kelpie's measured results depends on either, and the experiment that would judge them has not been run.",
       "sensitive": true,
       "required": false
     }
