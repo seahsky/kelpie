@@ -10,8 +10,20 @@ import { join } from 'node:path'
 
 const HOOK = new URL('../hooks/delegation-triage/triage.mjs', import.meta.url).pathname
 
+// Every variable the hook reads, cleared before the caller's own. The key matters most: with one exported in the
+// shell, which is exactly what running kelpie's benchmark does, the prefer-mode tests below would have sent their
+// prompts to the real API and billed for them. Tests that need a key set one explicitly and point it at a stub.
+const CLEARED = {
+  KELPIE_TRIAGE: '',
+  KELPIE_TRIAGE_THRESHOLD: '',
+  KELPIE_TRIAGE_CONSULT: 'off',
+  CLAUDE_PLUGIN_OPTION_JEV_API_KEY: '',
+  KELPIE_LOG: '',
+  KELPIE_LOG_PROMPTS: '',
+}
+
 const runHook = (event, env = {}, stdin = null) => new Promise((resolve, reject) => {
-  const child = execFile(process.execPath, [HOOK], { env: { ...process.env, KELPIE_TRIAGE: '', KELPIE_TRIAGE_THRESHOLD: '', KELPIE_LOG: '', KELPIE_LOG_PROMPTS: '', ...env } }, (error, stdout, stderr) => {
+  const child = execFile(process.execPath, [HOOK], { env: { ...process.env, ...CLEARED, ...env } }, (error, stdout, stderr) => {
     if (error) reject(new Error(`${error.message}\n${stderr}`))
     else resolve(stdout.trim())
   })

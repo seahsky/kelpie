@@ -413,6 +413,25 @@ test('resolveConsult is prefer mode with a key, and says why when it is not', ()
   assert.equal(resolveConsult({ env: { KELPIE_TRIAGE_CONSULT: 'auto' }, mode: 'prefer', hasKey: true }).on, true)
 })
 
+test('a key of whitespace is no key, and nothing goes on the wire for it', async () => {
+  // The raw presence check passed on ' ' while settings() trimmed it to '', so the consult ran and POSTed the
+  // prompt with an empty bearer token. A misconfiguration must read as "no key", not as "send it anyway".
+  const cwd = await project('prefer')
+  const log = join(cwd, 'kelpie.jsonl')
+  await withStub(answering(), async ({ url, seen }) => {
+    const note = noteOf(await runHook(event(cwd, 'move every handler in src/api onto the new client'), {
+      CLAUDE_PLUGIN_OPTION_JEV_API_KEY: '   ',
+      KELPIE_GATE_JEV_URL: url,
+      KELPIE_LOG: log,
+    }))
+    assert.equal(seen.length, 0)
+    assert.match(note, /prefer mode/, 'the mode note still stands')
+  })
+  const decision = lineFor(await lines(log), 'decision')
+  assert.equal(decision.consulted, false)
+  assert.match(decision.consult_reason, /no jev_api_key/)
+})
+
 test('a typo in the switch that sends prompts away leaves them here', () => {
   // The opposite of how resolveMode treats an unrecognised value, and deliberately so. Somebody who wrote `no` meant
   // off, and reading that as the default would put their prompts on the wire.

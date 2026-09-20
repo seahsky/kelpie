@@ -57,6 +57,17 @@ export const resolveVerbosity = ({ env = {} } = {}) => ({
  *
  * `appendFileSync` on one line is one write, which is what keeps concurrent sessions from interleaving halves of
  * each other's entries. Every failure is swallowed: the log is the thing that can be lost here.
+ *
+ * Synchronous is the deliberate choice, and the tradeoff is worth stating because it looks like an oversight. These
+ * hooks are short-lived processes that write a few hundred bytes and exit. An asynchronous append would have to be
+ * awaited all the way out through the hook's exit path, or the process ends first and the line is lost, which is the
+ * failure this log exists to prevent: a decision that happened and was not recorded. Awaiting it buys a bounded
+ * wait in exchange for a second way to lose a write and a way to interleave two, since the atomicity above comes
+ * from the single write syscall.
+ *
+ * What it costs is that a pathologically slow log target delays the turn, bounded by the hook's own timeout. That is
+ * a local file path the user configured. If a target ever needs to be something other than that, the fix is to
+ * refuse the path, not to make every ordinary write asynchronous.
  */
 export const logger = ({ path, base = {}, appendImpl = appendFileSync } = {}) => {
   if (!path) return () => {}

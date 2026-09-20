@@ -102,6 +102,10 @@ If a role appears to be running on the wrong model despite correct frontmatter, 
 
 ## Making this decision happen every time
 
-kelpie ships a `UserPromptSubmit` hook that checks each prompt and injects a compressed form of the policy above when the prompt is delegation-shaped.
+kelpie ships a `UserPromptSubmit` hook that checks each prompt and puts this decision in front of you at the moment it matters.
 It is off until `/kelpie:delegation-triage` turns it on, per project or per user.
-Turning it on does not change the policy, only when the policy gets read.
+
+Which mode it is in changes what you get, and one of them changes the policy rather than restating it:
+
+- `signals` injects a compressed form of the policy above on delegation-shaped prompts, and `always` does it on every prompt. Both lead with the main thread, so they are this file.
+- `prefer` inverts the default: the user has read the 6.37x and chosen to delegate anyway, so the note routes the work instead of arguing about whether to. With a Jev key it consults on every prompt it may read and names one route, one model and one effort. The two exclusions above survive the inversion, because neither is a cost question: open design decisions and security-sensitive work stay on the main thread whatever the note says.

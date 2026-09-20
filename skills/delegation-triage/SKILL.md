@@ -85,11 +85,15 @@ Every decision is recorded, including the ones that emitted nothing, with `emitt
 A run of `emitted: false` on prompts the user expected to fire is the evidence for lowering the bar or changing mode; without it the answer is a guess.
 
 Both sets of Jev calls go to the same file: what was sent, to where, how large it was, what came back.
-A `prefer` mode decision that was routed also carries `decided_by`, the five answers, and the route, so a session can be read back as what kelpie told the model to do.
+A routed `prefer` mode prompt writes two lines to read together: `jev_decision` carries the five answers and the route they produced, and the `decision` line after it carries `decided_by` and a summary of that route.
 
 Prompt text and file excerpts stay out unless `KELPIE_LOG_PROMPTS=1` or `KELPIE_LOG_EXCERPTS=1` is set.
 Do not set either in a user's config: the log then carries whatever they typed and whatever their repository holds.
 Say so if they ask for it.
+
+Without them the log holds lengths and a truncated unkeyed SHA-256.
+That is enough to tell two prompts apart, and enough for anyone holding the log to confirm a guess at a short prompt.
+If the user asks whether the log is safe to share, say that it carries no prompt text and is still not anonymous.
 
 ## Doing it
 
@@ -100,8 +104,10 @@ Say so if they ask for it.
    If they gave neither, report status and stop.
 2. For `status`: check the environment variable, then the project file, then the user file, in that order, and report the first one that names a mode, plus which source it came from.
    Say `off (no config)` when none exists.
-3. For a mode: write the file, creating `.claude/` if it is missing.
-   The whole file is one object:
+3. For a mode: read the file at the chosen path first, then write it back with `mode` set and every other key kept.
+   The file also holds `log`, so writing `{"mode": ...}` over it turns off logging the user asked for.
+   Create the parent directory if it is missing, and take it from the path you resolved rather than assuming `.claude/`: user scope is `$CLAUDE_CONFIG_DIR/kelpie-triage.json` when that variable is set, which is not inside the project at all.
+   A file that holds only a mode is one object:
 
    ```json
    {
@@ -109,7 +115,8 @@ Say so if they ask for it.
    }
    ```
 
-4. For `off`: prefer deleting the file over writing `{"mode": "off"}`, unless a user-scope file is on and the user wants this one project quiet, which is exactly what a project-scope `off` is for.
+4. For `off`: write `{"mode": "off"}` into the existing object when it holds anything else, and delete the file only when `mode` was all it held.
+   A project-scope `off` is the way to keep one repo quiet while a user-scope mode stays on, so deleting is not the same request as turning off.
 5. Confirm in one or two lines: the mode, the file path, and the scope it applies to.
 
 ## After writing it

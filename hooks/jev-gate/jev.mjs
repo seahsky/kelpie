@@ -217,10 +217,11 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
  * cookbook timings of 0.09 s to 0.31 s, which is one run rather than a commitment. A gate that can hang is a gate
  * that changes the arm it is supposed to measure, so it gets a deadline and a fallback instead of trust.
  *
- * `onAttempt` is called once per HTTP attempt, before the retry decision, with the status, the latency and the
- * bytes that went out. It exists because a retried call and a first-time success are the same thing from the
+ * `onAttempt` is called exactly once per HTTP attempt, before the retry decision, with the status, the latency and
+ * the bytes that went out. It exists because a retried call and a first-time success are the same thing from the
  * outside, and a gate that sends a repository's contents to a third party should be able to say how many times it
- * did so and what came back. It never affects control flow, and a callback that throws is ignored.
+ * did so and what came back. Once per attempt is the load-bearing part: the counts in the decision log are taken
+ * straight from these lines. It never affects control flow, and a callback that throws is ignored.
  */
 export const askJev = async ({ request, apiKey, perRequestTimeoutMs, url = JEV_URL, maxAttempts = 3, fetchImpl = fetch, sleepImpl = sleep, onAttempt = null }) => {
   let lastError = null
@@ -234,6 +235,15 @@ export const askJev = async ({ request, apiKey, perRequestTimeoutMs, url = JEV_U
     }
   }
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    // One HTTP attempt must produce exactly one record, or the log cannot be used to count what was sent. A body
+    // that would not parse as JSON used to produce two: the inner catch wrote one, then the outer catch wrote
+    // another, because a SyntaxError is not a JevError and fell through. The same bug labelled that attempt
+    // `terminal` and then retried it.
+    let recorded = false
+    const record = (entry) => {
+      recorded = true
+      note(entry)
+    }
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), perRequestTimeoutMs)
     const started = Date.now()
@@ -249,22 +259,27 @@ export const askJev = async ({ request, apiKey, perRequestTimeoutMs, url = JEV_U
         // call that was made and answered.
         try {
           const answers = parseAnswers(await response.json())
-          note({ attempt, status: response.status, ms: Date.now() - started, outcome: 'ok' })
+          record({ attempt, status: response.status, ms: Date.now() - started, outcome: 'ok' })
           return answers
         } catch (error) {
-          note({ attempt, status: response.status, ms: Date.now() - started, outcome: 'terminal', error: error.message })
+          // The outcome follows what happens next, not what threw. parseAnswers raises a terminal JevError and ends
+          // it here; anything else, a body that is not JSON above all, is retried and must say so.
+          const terminal = error instanceof JevError && error.terminal
+          record({ attempt, status: response.status, ms: Date.now() - started, outcome: terminal ? 'terminal' : 'retryable', error: error.message })
           throw error
         }
       }
       const detail = `HTTP ${response.status}`
       const terminal = TERMINAL_STATUSES.has(response.status)
-      note({ attempt, status: response.status, ms: Date.now() - started, outcome: terminal ? 'terminal' : 'retryable', error: detail })
+      record({ attempt, status: response.status, ms: Date.now() - started, outcome: terminal ? 'terminal' : 'retryable', error: detail })
       if (terminal) throw new JevError(detail, { terminal: true })
       lastError = new JevError(detail)
     } catch (error) {
       if (error instanceof JevError && error.terminal) throw error
       lastError = error instanceof JevError ? error : new JevError(String(error && error.message ? error.message : error))
-      note({ attempt, status: null, ms: Date.now() - started, outcome: 'error', error: lastError.message })
+      // Only the failures that never got as far as a response land here. Anything the block above already recorded
+      // re-throws through this catch, and recording it twice would double every count taken from the log.
+      if (!recorded) record({ attempt, status: null, ms: Date.now() - started, outcome: 'error', error: lastError.message })
     } finally {
       clearTimeout(timer)
     }

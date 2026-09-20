@@ -10,8 +10,12 @@ import { join, relative } from 'node:path'
 
 const GATE = new URL('../hooks/jev-gate/gate.mjs', import.meta.url).pathname
 
+// Cleared before the caller's own, so the suite cannot reach TypeSafe because a key happened to be exported in the
+// shell. Every test that wants the gate on sets both a key and a stub URL.
+const CLEARED = { CLAUDE_PLUGIN_OPTION_JEV_API_KEY: '', KELPIE_GATE_MODE: '', KELPIE_GATE_LOG: '', KELPIE_LOG: '', KELPIE_LOG_EXCERPTS: '' }
+
 const runGate = (event, env) => new Promise((resolve, reject) => {
-  const child = execFile(process.execPath, [GATE], { env: { ...process.env, ...env } }, (error, stdout, stderr) => {
+  const child = execFile(process.execPath, [GATE], { env: { ...process.env, ...CLEARED, ...env } }, (error, stdout, stderr) => {
     if (error) reject(new Error(`${error.message}\n${stderr}`))
     else resolve(stdout.trim())
   })
@@ -232,6 +236,60 @@ test('an unreachable Jev falls back to the shipped default and says so in the lo
   assert.equal(attempts.length, 9, 'three requests at three attempts each')
   assert.ok(attempts.every((entry) => entry.status === null && entry.outcome === 'error'))
   assert.ok(entries.filter((entry) => entry.event === 'jev_decision').every((entry) => entry.reason.startsWith('jev unavailable')))
+})
+
+test('a body that is not JSON is one retryable attempt, not two records saying different things', async () => {
+  // A 200 carrying junk makes response.json() reject with a SyntaxError, which is not a JevError. The inner catch
+  // recorded it as `terminal` and re-threw, the outer catch recorded it again as `error`, and the call was then
+  // retried. So one HTTP attempt produced two lines, labelled terminal, and the retry happened anyway. Every count
+  // taken from this log doubled.
+  const cwd = await workspace(FILES)
+  const log = join(cwd, 'gate.jsonl')
+  const { server, url } = await new Promise((resolve) => {
+    const s = createServer((req, res) => {
+      req.on('data', () => {})
+      req.on('end', () => {
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end('not json at all')
+      })
+    })
+    s.listen(0, '127.0.0.1', () => resolve({ server: s, url: `http://127.0.0.1:${s.address().port}/v1/systemone` }))
+  })
+  try {
+    await runGate(auditEvent(cwd, await transcript(cwd, 'claude-opus-5')), {
+      CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'test-key',
+      KELPIE_GATE_JEV_URL: url,
+      KELPIE_GATE_LOG: log,
+      KELPIE_GATE_REQUEST_MS: '500',
+    })
+  } finally {
+    server.close()
+  }
+  const entries = (await readFile(log, 'utf8')).trim().split('\n').map((line) => JSON.parse(line))
+  const attempts = entries.filter((entry) => entry.event === 'jev_attempt')
+  assert.equal(attempts.length, 9, 'three requests at three attempts each, one line per attempt')
+  assert.ok(attempts.every((entry) => entry.status === 200), 'the server did answer, so the status is not null')
+  assert.ok(attempts.every((entry) => entry.outcome === 'retryable'), 'it was retried, so it cannot be logged as terminal')
+})
+
+test('a 200 whose answers are unreadable is terminal, and is recorded once as terminal', async () => {
+  // The other half of the pair: parseAnswers raises a terminal JevError, so this one really does end the call.
+  const cwd = await workspace(FILES)
+  const log = join(cwd, 'gate.jsonl')
+  const { server, url } = await stubServer(() => ({ status: 200, payload: { answers: { difficulty: { type: 'score' } } } }))
+  try {
+    await runGate(auditEvent(cwd, await transcript(cwd, 'claude-opus-5')), {
+      CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'test-key',
+      KELPIE_GATE_JEV_URL: url,
+      KELPIE_GATE_LOG: log,
+    })
+  } finally {
+    server.close()
+  }
+  const entries = (await readFile(log, 'utf8')).trim().split('\n').map((line) => JSON.parse(line))
+  const attempts = entries.filter((entry) => entry.event === 'jev_attempt')
+  assert.equal(attempts.length, 3, 'one attempt per request, and no retry after a terminal answer')
+  assert.ok(attempts.every((entry) => entry.outcome === 'terminal'))
 })
 
 test('jev mode with no key records the misconfiguration rather than silently becoming the static arm', async () => {

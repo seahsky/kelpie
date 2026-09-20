@@ -40,7 +40,7 @@ Turn it on with `/kelpie:delegation-triage`, per project or per user. It writes 
 
 A `UserPromptSubmit` hook reads each prompt and injects a short note when the prompt looks like work that might be worth fanning out. It exists because a policy skill only helps if the model reads it at the moment it matters, and measured over 180 trials it did not.
 
-The note leads with "do it on the main thread", because that is the right answer on almost every prompt. It never rewrites your prompt: it adds about 130 tokens of context and nothing else, and any error emits nothing at all.
+The note leads with "do it on the main thread", because that is the right answer on almost every prompt. It never rewrites your prompt: it adds a paragraph of context and nothing else, about 270 tokens for the full note. A hook that fails, times out, or reads a payload it does not understand emits nothing, which leaves the prompt as you typed it. A Jev call that fails is narrower and does not silence the turn: the mode falls back to the note it would have shown with no key.
 
 | Mode | What it does |
 |---|---|
@@ -94,9 +94,9 @@ Point `KELPIE_LOG` at a file, or add `"log": "/path/to/kelpie.jsonl"` to your `k
 
 The gate writes to the same file: one `jev_request` per file, naming the path, the excerpt size and a hash of exactly what was sent, one `jev_attempt` per HTTP call with its status and latency, and one `jev_decision` with the answer and what it decided. A `file_skipped` line records every path the containment check refused to read. `KELPIE_GATE_LOG` still works and still wins for the gate alone.
 
-`prefer` mode's own calls land in the same three events with `"stage":"prompt"` and no path, since nothing from your repository is sent. Its `decision` line then carries `decided_by`, the five answers, and the route, so a session reads back as what kelpie told the model to do rather than what it was configured to do.
+`prefer` mode's own calls land in the same three events with `"stage":"prompt"` and no path, since nothing from your repository is sent. The five answers are on its `jev_decision` line, together with the route they produced. The `decision` line that follows carries `decided_by` and a summary of that route, so reading the pair back tells you what kelpie told the model to do rather than what it was configured to do.
 
-Prompt text and file excerpts are **not** written unless you ask by name, with `KELPIE_LOG_PROMPTS=1` and `KELPIE_LOG_EXCERPTS=1`. Without them the log carries sizes and hashes, which tell two prompts apart without disclosing either. A log that cannot be written is dropped rather than failing your turn.
+Prompt text and file excerpts are **not** written unless you ask by name, with `KELPIE_LOG_PROMPTS=1` and `KELPIE_LOG_EXCERPTS=1`. Without them the log carries lengths and a truncated SHA-256, which is enough to tell two prompts apart and to match a prompt you already have. It is not confidentiality: the hash is unkeyed, so anyone holding the log can confirm a guess at a short or predictable prompt. Treat the log as sensitive if the prompts were. A log that cannot be written is dropped rather than failing your turn.
 
 ## The spawn gate
 
