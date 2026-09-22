@@ -150,7 +150,7 @@ The key does not send your prompts. The prompt consult described above needs the
 
 ### Before you turn it on
 
-**It sends your code off the machine.** For each path in a gated call, the gate reads the file and POSTs an excerpt, up to 120 lines or 6000 characters, plus the path and line count. The questions are about the file's contents, so this is the mechanism and not a side effect, and it happens before you get a chance to decline the call. Files outside the working directory are refused, symlinks included. With the triage in `prefer` mode, your prompts go too.
+**It sends your code off the machine.** For each path in a gated call, the gate reads the file and POSTs an excerpt, up to 120 lines or 6000 characters, plus the path and line count. The questions are about the file's contents, so this is the mechanism and not a side effect, and it happens before you get a chance to decline the call. Files outside the working directory are refused, symlinks included. Your prompts go too only if you also turn on "Send prompts to Jev"; the key alone sends none.
 
 **It only routes down.** The rungs are fixed from your session's model *before* Jev is asked: haiku/sonnet/opus under an Opus or Fable session, haiku/sonnet under a Sonnet one. Jev is asked about the work, never about which model should run it. A wrong answer picks a wrong rung; it cannot invent one above the session you are paying for.
 

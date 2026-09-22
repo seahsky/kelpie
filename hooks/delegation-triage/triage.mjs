@@ -14,7 +14,7 @@
 // Why prefer mode is different from the rest. The other modes decide from keyword signals and argue for the main
 // thread, which is the right cost for confirming a default that was correct on 180 of 180 measured prompts. prefer
 // mode asks a different question, whether a cheaper model can do this job, and a keyword score cannot answer it.
-// With a Jev API key configured, prefer mode asks about the prompt instead and injects the route it gets back,
+// With a Jev API key and the jev_send_prompts option on, prefer mode asks about the prompt instead and injects the route it gets back,
 // naming the agent, the model, and whether the result needs an independent review. See consult.mjs, which also
 // states what that costs: the text of every prompt it reads goes to a third party before the turn starts.
 //
