@@ -112,7 +112,7 @@ export const FAMILIES = [
 export const THRESHOLD = 2
 
 /**
- * The bar in prefer mode, where the user has opted into delegating by default.
+ * The bar in prefer mode with no Jev key, where keywords are all there is to go on.
  *
  * One signal is enough there, but zero is still zero: a prompt carrying no delegation shape at all has nothing to
  * fan out, and spawning for it is the 6.37x with none of the reason. Raising this to 0 would fire on every prompt,
@@ -143,20 +143,22 @@ const DECISION = [
   'Make the delegation call explicitly before you start, and say which way you went in one line.',
   '- Fits in one context? Do it on the main thread. Forcing delegation measured 6.37x the cost of a plain prompt for the same 100% pass rate.',
   '- Same fully-specified change across more files than one context holds: kelpie:mech-executor, specified in one shot, no open decisions left.',
-  '- Wide read-only recon where you want the conclusion and not the file dumps: built-in Explore.',
+  '- Wide read-only lookups where you want the answer and not the file dumps: kelpie:recon, on Haiku. Built-in Explore runs on your own model.',
   '- A claim a test, type check, lint, or build can settle: run that check. kelpie:verifier is only for claims no executable check reaches.',
   '- Judgment calls and security-sensitive work stay on the main thread. Any ad-hoc fan-out sets model explicitly.',
 ]
 
-// prefer mode inverts the default: the user has read the 6.37x and chosen to delegate anyway, so the note routes the
-// work instead of arguing about whether to. The two exclusions survive the inversion, because neither is a cost
-// question. Open design decisions have nothing measured behind handing them to a subagent at any tier, and Opus has
-// been observed refusing delegated security work it accepts inline.
+// prefer mode routes the work instead of arguing about whether to, and the routes that do the work name a model
+// cheaper than an Opus session. That is the whole case for delegating on price: a subagent on the session's own model pays for the
+// hand-off and saves nothing. A cheaper model is not enough on its own either: forcing delegation measured 6.37x a
+// plain prompt at a 1.14x cheaper blended price, because the turn loop multiplied the tokens. Hence the size bar in
+// the first line. The two exclusions stay, because neither is a cost question. Open design decisions have nothing measured behind handing them to a subagent
+// at any tier, and Opus has been observed refusing delegated security work it accepts inline.
 const ROUTES = [
-  'You have opted into delegating by default, and the cost of that is accepted: forcing delegation measured 6.37x a plain prompt for the same 100% pass rate. Pick a route and take it rather than working inline.',
-  '- Fully-specified mechanical work: kelpie:mech-executor. Resolve every open decision first, then spec it in one shot with exact paths and acceptance criteria, because a subagent cannot ask you a question mid-task.',
+  'Hand work to a subagent when it runs on a cheaper model than this session and the work is big enough to outrun the hand-off. A subagent on your own model pays for the hand-off and saves nothing, so where the cheapest model that fits is yours, do the work here.',
+  '- Lookups that take more than a search or two: kelpie:recon, on Haiku. It reports what the code says, not what is wrong with it.',
+  '- Fully-specified work: kelpie:mech-executor, on Sonnet unless you pass model: haiku for a pattern-only edit. Resolve every open decision first, then spec it in one shot with exact paths and acceptance criteria, because a subagent cannot ask you a question mid-task.',
   '- The same treatment across many files: a kelpie workflow, /kelpie:migrate-in-parallel or /kelpie:audit-many-files, which fans out and then settles correctness with one executable check.',
-  '- Read-only recon: built-in Explore.',
   '- A claim no test, type check, lint, or build can settle: kelpie:verifier. Where a check can settle it, run the check instead.',
   '- Still on the main thread whatever the mode: work with open design decisions left in it, and security-sensitive work. Any ad-hoc fan-out sets model explicitly.',
 ]

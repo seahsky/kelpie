@@ -25,8 +25,10 @@ const BASE = {
   KELPIE_LOG: '',
   KELPIE_LOG_PROMPTS: '',
   KELPIE_GATE_JEV_URL: '',
-  KELPIE_GATE_EFFORT_CEILING: '',
+  KELPIE_GATE_CONFIDENCE_FLOOR: '',
   CLAUDE_PLUGIN_OPTION_JEV_API_KEY: '',
+  // See delegation-triage.test.mjs: a user-scope config on the machine running the tests would otherwise decide them.
+  CLAUDE_CONFIG_DIR: join(tmpdir(), 'kelpie-tests-no-user-config'),
 }
 
 const runHook = (event, env = {}) => new Promise((resolve, reject) => {
@@ -58,7 +60,7 @@ const answering = (overrides = {}) => () => ({
   status: 200,
   payload: {
     answers: {
-      delegation_saves: { type: 'noul', noul: overrides.saves ?? 0.9 },
+      substantial: { type: 'noul', noul: overrides.substantial ?? 0.9 },
       read_only: { type: 'noul', noul: overrides.readOnly ?? 0.05 },
       fully_specified: { type: 'noul', noul: overrides.specified ?? 0.95 },
       difficulty: { type: 'score', score: overrides.difficulty ?? 0.1, confidence: overrides.confidence ?? 0.9 },
@@ -110,17 +112,33 @@ const withStub = async (handler, body) => {
   }
 }
 
-test('prefer mode routes the prompt the A/B actually ran, with no threshold override anywhere', async () => {
+/** The note for one prompt under a session of the given model, or null model for a first prompt. */
+const routeNote = async (answers, { prompt = MEASURED, model = 'claude-opus-5', env = {} } = {}) => {
   const cwd = await project('prefer')
+  return withStub(answering(answers), async ({ url, seen }) => {
+    const path = model === null ? null : await transcript(cwd, model)
+    const output = await runHook(event(cwd, prompt, path), { CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'test-key', KELPIE_GATE_JEV_URL: url, ...env })
+    return { note: output === '' ? null : noteOf(output), seen }
+  })
+}
+
+test('prefer mode routes the prompt the A/B actually ran, with no threshold override anywhere', async () => {
+  const { note, seen } = await routeNote({ difficulty: 1.1 })
+  assert.equal(seen.length, 1, 'one call, five questions in it')
+  assert.match(note, /decided with jev: delegate this/)
+  assert.match(note, /kelpie:mech-executor with model: sonnet/)
+  assert.match(note, /moderate \(difficulty 1\.1\)/)
+})
+
+test('an install nobody configured consults too, because prefer is the default', async () => {
+  const cwd = await project(null)
   await withStub(answering({ difficulty: 1.1 }), async ({ url, seen }) => {
     const note = noteOf(await runHook(event(cwd, MEASURED, await transcript(cwd, 'claude-opus-5')), {
       CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'test-key',
       KELPIE_GATE_JEV_URL: url,
     }))
-    assert.equal(seen.length, 1, 'one call, five questions in it')
-    assert.match(note, /decided with jev: delegate this/)
-    assert.match(note, /kelpie:mech-executor, model sonnet, effort medium/)
-    assert.match(note, /moderate \(difficulty 1\.1\)/)
+    assert.equal(seen.length, 1)
+    assert.match(note, /kelpie:mech-executor with model: sonnet/)
   })
 })
 
@@ -132,93 +150,59 @@ test('the five questions go in one request, with the prompt and a count kelpie d
       KELPIE_GATE_JEV_URL: url,
     })
     const [body] = seen
-    assert.deepEqual(Object.keys(body.questions), ['delegation_saves', 'read_only', 'fully_specified', 'difficulty', 'long_horizon'])
-    assert.deepEqual(Object.keys(body.state).sort(), ['paths_named', 'task'])
+    assert.deepEqual(Object.keys(body.questions), ['substantial', 'read_only', 'fully_specified', 'difficulty', 'long_horizon'])
+    assert.deepEqual(Object.keys(body.state).sort(), ['paths_named', 'task'], 'the session model is compared here, never sent')
     assert.equal(body.state.paths_named, 3, 'counted here, because Jev is documented not to count reliably')
     assert.match(body.state.task, /^move every handler/)
   })
 })
 
-test('jev saying the session is cheaper is an answer, and it is still delivered', async () => {
-  // The inversion prefer mode asks for: delegate unless doing all of it in this session costs less. Both answers are worth
-  // saying, because the mode's own note said neither.
-  const cwd = await project('prefer')
-  await withStub(answering({ saves: 0.1 }), async ({ url }) => {
-    const note = noteOf(await runHook(event(cwd, MEASURED), { CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'test-key', KELPIE_GATE_JEV_URL: url }))
-    assert.match(note, /keep this in this session/)
-    assert.match(note, /delegation_saves 0\.1/)
-    assert.doesNotMatch(note, /mech-executor/)
-  })
+test('work too small to hand over is an answer, and it is still delivered', async () => {
+  const { note } = await routeNote({ substantial: 0.1 })
+  assert.match(note, /keep this in this session/)
+  assert.match(note, /smaller than handing it over \(substantial 0\.1\)/)
+  assert.doesNotMatch(note, /mech-executor/)
 })
 
-test('read-only work goes to the built-in Explore agent, at no named tier', async () => {
-  const cwd = await project('prefer')
-  await withStub(answering({ readOnly: 0.9 }), async ({ url }) => {
-    const note = noteOf(await runHook(event(cwd, 'where is the session cookie read'), { CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'test-key', KELPIE_GATE_JEV_URL: url }))
-    assert.match(note, /built-in Explore agent/)
-    assert.doesNotMatch(note, /Spec it in one shot/, 'recon takes a question, not an acceptance criterion')
-  })
+test('read-only work goes to kelpie:recon on haiku, not to Explore on the session model', async () => {
+  const { note } = await routeNote({ readOnly: 0.9 }, { prompt: 'where is the session cookie read' })
+  assert.match(note, /Send the lookup to kelpie:recon with model: haiku/)
+  assert.doesNotMatch(note, /Explore/)
+  assert.doesNotMatch(note, /Spec it in one shot/, 'recon takes a question, not an acceptance criterion')
 })
 
-test('an open decision keeps the work at the session tier and names the precondition', async () => {
-  const cwd = await project('prefer')
-  await withStub(answering({ specified: 0.2 }), async ({ url }) => {
-    const note = noteOf(await runHook(event(cwd, 'make the uploader nicer', await transcript(cwd, 'claude-opus-5')), {
-      CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'test-key',
-      KELPIE_GATE_JEV_URL: url,
-    }))
-    assert.match(note, /Resolve every open decision here first/)
-    assert.match(note, /general-purpose, at this session's own model/)
-    assert.doesNotMatch(note, /model haiku|model sonnet/, 'an open decision costs the route its tiering, not its delegation')
-  })
+test('an open decision is resolved here, and the rest goes to a cheaper model', async () => {
+  const { note } = await routeNote({ specified: 0.2, difficulty: 1.1 }, { prompt: 'make the uploader nicer' })
+  assert.match(note, /Resolve every open decision here first \(fully_specified 0\.2\)\. Then hand over what is left\./)
+  assert.match(note, /kelpie:mech-executor with model: sonnet/)
 })
 
-test('hard and long-horizon work gets the top reachable rung and an independent review', async () => {
-  const cwd = await project('prefer')
-  await withStub(answering({ difficulty: 2.0, longHorizon: 0.9 }), async ({ url }) => {
-    const note = noteOf(await runHook(event(cwd, MEASURED, await transcript(cwd, 'claude-opus-5')), {
-      CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'test-key',
-      KELPIE_GATE_JEV_URL: url,
-    }))
-    assert.match(note, /kelpie:mech-executor, model opus, effort xhigh/)
-    assert.match(note, /kelpie:verifier check the result, model opus, effort xhigh/)
-  })
+test('a route on the session\'s own model is no route: hard, long work stays under an opus session, reviewed', async () => {
+  const { note } = await routeNote({ difficulty: 2.0, longHorizon: 0.9 })
+  assert.match(note, /keep this in this session/)
+  assert.match(note, /cheapest model that fits is opus.*already runs on opus/)
+  assert.match(note, /Then have kelpie:verifier with model: opus check the result/)
 })
 
-test('the route never climbs above the session model', async () => {
-  const cwd = await project('prefer')
-  await withStub(answering({ difficulty: 2.0, longHorizon: 0.9 }), async ({ url }) => {
-    const note = noteOf(await runHook(event(cwd, MEASURED, await transcript(cwd, 'claude-sonnet-5')), {
-      CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'test-key',
-      KELPIE_GATE_JEV_URL: url,
-    }))
-    assert.match(note, /kelpie:mech-executor, model sonnet, effort xhigh/)
-    assert.match(note, /kelpie:verifier check the result, model sonnet/)
-  })
+test('a sonnet session keeps moderate work and still hands mechanical work to haiku', async () => {
+  assert.match((await routeNote({ difficulty: 1.1 }, { model: 'claude-sonnet-5' })).note, /keep this in this session/)
+  assert.match((await routeNote({ difficulty: 0.1 }, { model: 'claude-sonnet-5' })).note, /kelpie:mech-executor with model: haiku/)
 })
 
-test('the effort ceiling clamps the route, so a triage cannot outrun the spawn gate', async () => {
-  const cwd = await project('prefer')
-  await withStub(answering({ difficulty: 2.0, longHorizon: 0.9 }), async ({ url }) => {
-    const note = noteOf(await runHook(event(cwd, MEASURED, await transcript(cwd, 'claude-opus-5')), {
-      CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'test-key',
-      KELPIE_GATE_JEV_URL: url,
-      KELPIE_GATE_EFFORT_CEILING: 'medium',
-    }))
-    assert.match(note, /effort medium/)
-    assert.doesNotMatch(note, /xhigh/)
-  })
+test('a route note never names an effort, because the Agent tool cannot pass one', async () => {
+  for (const answers of [{ difficulty: 0.1 }, { difficulty: 1.1 }, { difficulty: 2.0, longHorizon: 0.9 }]) {
+    const { note } = await routeNote(answers, { model: 'claude-fable-5' })
+    assert.doesNotMatch(note, /effort/, JSON.stringify(answers))
+  }
 })
 
-test('the first prompt of a session still gets a route, with no model named', async () => {
-  // There is no assistant turn in the transcript yet, so the session model cannot be read. The spawn gate emits
-  // nothing on that, because it cannot show a route is downward. Here it names no model, which inherits the
-  // session's and so cannot be above it.
-  const cwd = await project('prefer')
-  await withStub(answering({ difficulty: 2.0, longHorizon: 0.9 }), async ({ url }) => {
-    const note = noteOf(await runHook(event(cwd, MEASURED), { CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'test-key', KELPIE_GATE_JEV_URL: url }))
-    assert.match(note, /kelpie:mech-executor, at this session's model, effort xhigh/)
-  })
+test('the first prompt of a session gets the route, and the price comparison goes to the model', async () => {
+  // There is no assistant turn in the transcript yet, and no hook payload names the model. On run 02 that was every
+  // consult, and a route that named no model inherited the session's, so no route could be cheaper.
+  const { note } = await routeNote({ difficulty: 1.1 }, { model: null })
+  assert.match(note, /costs less than doing this here if this session runs on a model above sonnet/)
+  assert.match(note, /If this session runs on sonnet or a cheaper model, do the work here instead/)
+  assert.match(note, /kelpie:mech-executor with model: sonnet/)
 })
 
 test('a dead endpoint leaves prefer mode saying exactly what it said before the consult existed', async () => {
@@ -231,30 +215,20 @@ test('a dead endpoint leaves prefer mode saying exactly what it said before the 
   assert.match(note, /kelpie:mech-executor/, 'the mode note, not a route')
 })
 
-test('an unsure difficulty costs the route its tier, and the route still arrives', async () => {
-  // The first real call kelpie made came back with difficulty at confidence 0.52 against a floor of 0.6, and the
-  // flat floor discarded the whole verdict over it. The arm then ran as a copy of the arm it was being contrasted
-  // against. An unsure rung is now a rung nobody names, not an answer nobody gets.
-  const cwd = await project('prefer')
-  await withStub(answering({ difficulty: 1.68, confidence: 0.52 }), async ({ url, seen }) => {
-    const note = noteOf(await runHook(event(cwd, MEASURED, await transcript(cwd, 'claude-opus-5')), {
-      CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'test-key',
-      KELPIE_GATE_JEV_URL: url,
-    }))
-    assert.equal(seen.length, 1)
-    assert.match(note, /kelpie:mech-executor, at this session's own model and effort/)
-    assert.match(note, /not confident enough to act on/)
-    assert.doesNotMatch(note, /model sonnet|model haiku|model opus/)
-  })
+test('an unsure difficulty is read one level harder, and the route still arrives', async () => {
+  const { note, seen } = await routeNote({ difficulty: 0.1, confidence: 0.3 })
+  assert.equal(seen.length, 1)
+  assert.match(note, /kelpie:mech-executor with model: sonnet/, 'unsure mechanical is read as moderate')
+  assert.match(note, /read one level harder/)
 })
 
 test('an unsure answer that decided the route does leave the mode note standing', async () => {
   const cwd = await project('prefer')
-  const unsureSaves = () => ({
+  const unsure = () => ({
     status: 200,
     payload: {
       answers: {
-        delegation_saves: { type: 'noul', noul: 0.9, confidence: 0.2 },
+        substantial: { type: 'noul', noul: 0.9, confidence: 0.2 },
         read_only: { type: 'noul', noul: 0.05 },
         fully_specified: { type: 'noul', noul: 0.95 },
         difficulty: { type: 'score', score: 0.1, confidence: 0.9 },
@@ -262,24 +236,20 @@ test('an unsure answer that decided the route does leave the mode note standing'
       },
     },
   })
-  await withStub(unsureSaves, async ({ url, seen }) => {
+  await withStub(unsure, async ({ url, seen }) => {
     assert.equal(await runHook(event(cwd, MEASURED), { CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'test-key', KELPIE_GATE_JEV_URL: url }), '')
     assert.equal(seen.length, 1, 'the call was made and the answer was declined')
   })
 })
 
-test('the answers the run actually got produce a route, where they used to produce nothing', async () => {
-  // The answers a real call actually returned on the prompt above, recorded from kelpie's own benchmark.
-  const cwd = await project('prefer')
-  await withStub(answering({ saves: 0.2, readOnly: 0.02, specified: 0.11, difficulty: 1.68, longHorizon: 0.5, confidence: 0.52 }), async ({ url }) => {
-    const note = noteOf(await runHook(event(cwd, MEASURED, await transcript(cwd, 'claude-opus-5')), {
-      CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'test-key',
-      KELPIE_GATE_JEV_URL: url,
-    }))
-    assert.match(note, /keep this in this session/)
-    assert.match(note, /delegation_saves 0\.2/)
-    assert.doesNotMatch(note, /kelpie:verifier/, 'the review was difficulty\'s call, and difficulty was not sure enough')
-  })
+test('the answers run 02 got now name a route an Opus session can take', async () => {
+  // Four of these are what a real call returned on the prompt above, recorded from kelpie's own benchmark. The fifth,
+  // substantial, did not exist yet and is assumed true. The old question answered 0.2 here, and no route followed.
+  const { note } = await routeNote({ substantial: 0.9, readOnly: 0.02, specified: 0.11, difficulty: 1.68, longHorizon: 0.49, confidence: 0.52 })
+  assert.match(note, /delegate this/)
+  assert.match(note, /Resolve every open decision here first/)
+  assert.match(note, /kelpie:mech-executor with model: sonnet/)
+  assert.doesNotMatch(note, /kelpie:verifier/, 'the review was difficulty\'s call, and difficulty was not sure enough')
 })
 
 test('the other modes send nothing, even with a key configured', async () => {
@@ -301,11 +271,12 @@ test('the other modes send nothing, even with a key configured', async () => {
   }
 })
 
-test('prefer mode with no key is prefer mode as it shipped', async () => {
-  const cwd = await project('prefer')
+test('prefer mode with no key sends nothing and falls back to its own note', async () => {
+  const cwd = await project(null)
   const log = join(cwd, 'kelpie.jsonl')
   await runHook(event(cwd, 'move every handler in src/api onto the new client'), { KELPIE_LOG: log })
   const decision = lineFor(await lines(log), 'decision')
+  assert.equal(decision.mode, 'prefer')
   assert.equal(decision.consulted, false)
   assert.match(decision.consult_reason, /no jev_api_key/)
 })
@@ -361,6 +332,7 @@ test('the log records the call, the answers, the route, and who decided', async 
 
     const jev = lineFor(entries, 'jev_decision')
     assert.equal(jev.asked, true)
+    assert.equal(jev.session_model, 'opus')
     assert.equal(jev.answers.difficulty.score, 1.1)
     assert.equal(jev.decision.agentType, 'kelpie:mech-executor')
     assert.equal(jev.decision.model, 'sonnet')
@@ -373,6 +345,7 @@ test('the log records the call, the answers, the route, and who decided', async 
     assert.equal(decision.score, 0, 'the keyword score is still recorded, and it still disagrees')
     assert.equal(decision.route.delegate, true)
     assert.equal(decision.route.model, 'sonnet')
+    assert.equal(decision.route.only_above, null, 'the session model was known, so no condition went to the model')
     assert.ok(decision.note_chars > 0)
   })
 })
@@ -443,17 +416,18 @@ test('a typo in the switch that sends prompts away leaves them here', () => {
 })
 
 test('a route note names the route and the answer behind it, and never argues both ways', () => {
-  const ceilings = { model: 'opus', effort: 'xhigh' }
   const answers = {
-    delegation_saves: { type: 'noul', noul: 0.8 },
+    substantial: { type: 'noul', noul: 0.8 },
     read_only: { type: 'noul', noul: 0.1 },
     fully_specified: { type: 'noul', noul: 0.9 },
     difficulty: { type: 'score', score: 0.2 },
     long_horizon: { type: 'noul', noul: 0.1 },
   }
-  const note = renderRoute(decidePrompt(answers, ceilings))
-  assert.match(note, /model haiku, which takes no effort parameter/)
+  const note = renderRoute(decidePrompt(answers, { session: 'opus' }))
+  assert.match(note, /kelpie:mech-executor with model: haiku/)
+  assert.match(note, /A subagent on haiku costs less than doing this here/)
   assert.doesNotMatch(note, /keep this in this session/)
+  assert.doesNotMatch(note, /if this session runs on/i, 'the session model was known, so the hook compared it itself')
   assert.doesNotMatch(note, /kelpie:verifier/, 'the review gate is one cell, and this is not it')
   assert.match(note, /Security-sensitive work stays in this session/)
 })

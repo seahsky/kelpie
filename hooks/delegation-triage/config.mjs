@@ -11,10 +11,24 @@ import { join } from 'node:path'
 
 /**
  * `signals` emits only on prompts that clear the threshold. `always` emits on every prompt it is allowed to read.
- * `prefer` is the opt-in inversion: a lower bar, and a note that routes the work instead of arguing for the main
- * thread. It is the one mode that costs money by design, so it is named rather than reached by a flag on another.
+ * `prefer` routes the work to a cheaper subagent where that costs less, instead of arguing for the main thread.
  */
 export const MODES = ['off', 'signals', 'always', 'prefer']
+
+/**
+ * The mode an install gets when nothing names one: prefer.
+ *
+ * It was `off`, and the reason no longer holds. Off-by-default assumed the only decision on offer was "delegate or
+ * not" at the session's own price, where the main thread won on 180 of 180 measured prompts. prefer mode now
+ * delegates only to a model cheaper than the session, and only when the work is big enough to outrun the hand-off,
+ * so its answer on most prompts is still "do it here". What it adds is the one case nothing else in kelpie reaches:
+ * a job an Opus session would do itself that Sonnet or Haiku can do for less.
+ *
+ * Without a Jev key it runs on keywords at a bar of one signal, so a prompt with no delegation shape stays silent.
+ * With a key, every prompt it reads is sent to a third party, and the key is the consent to that: Claude Code asks
+ * for it when the plugin is enabled, and the prompt says what it turns on.
+ */
+export const DEFAULT_MODE = 'prefer'
 
 export const CONFIG_BASENAME = 'kelpie-triage.json'
 
@@ -75,8 +89,8 @@ export const resolveThreshold = ({ env = {} } = {}) => {
 /**
  * Whether prefer mode asks Jev about this prompt before deciding, and why not when it does not.
  *
- * It is on by default in prefer mode with a key configured, because that is what prefer mode is for: the user has
- * opted into delegating by default, and a keyword score cannot tell a job that splits from a job that does not.
+ * It is on by default in prefer mode with a key configured, because that is what prefer mode is for: a keyword score
+ * cannot tell whether a job is big enough to hand over, or how cheap a model it can stand.
  *
  * It is prefer mode only. The other modes answer "stay on the main thread" by default and are right on almost every
  * prompt, so paying a network round trip to confirm the default buys nothing. `off` is the way out for anyone in
@@ -107,5 +121,5 @@ export const resolveMode = ({ env = {}, cwd = '', home = homedir(), modeInFileIm
   const userPath = userConfigPath({ env, home })
   const user = modeInFileImpl(userPath)
   if (user !== null) return { mode: user, source: userPath }
-  return { mode: 'off', source: 'default' }
+  return { mode: DEFAULT_MODE, source: 'default' }
 }
