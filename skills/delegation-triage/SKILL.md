@@ -52,7 +52,7 @@ The note then says which model the session has to be above to take the route, an
 
 **Say these three things before a user turns on "Send prompts to Jev".**
 
-- **Every prompt goes to a third party.** The text of each prompt the triage reads is POSTed to `api.typesafe.ai` before the turn starts. Not slash commands and not the notices Claude Code generates itself, but everything else.
+- **Every prompt goes to a third party.** The text of each prompt the triage reads is POSTed to `api.typesafe.ai` before the turn starts. Not slash commands and not the notices Claude Code generates itself, such as the reports subagents hand back, but everything else. The hook knows a notice only by its wording, so a new kind of notice gets sent until kelpie learns it.
 - **Every turn waits for it.** Up to six seconds, two attempts. `KELPIE_TRIAGE_BUDGET_MS` and `KELPIE_TRIAGE_REQUEST_MS` set that.
 - **It cannot fail a turn.** A timeout, an error, or an unsure answer on a question that decides whether there is a route leaves `prefer` mode saying exactly what it says with no key. An unsure `difficulty` is read one level harder and drops the review, so the route still arrives.
 

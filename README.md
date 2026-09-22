@@ -100,7 +100,7 @@ The note then says which model your session has to be above to take the route, a
 
 Three things to know before you turn it on.
 
-- **Every prompt goes to a third party**, before the turn starts. Not slash commands, and not the notices Claude Code generates itself, but everything else. A key alone sends no prompts: that takes the "Send prompts to Jev" option, which is off unless you turn it on. `KELPIE_TRIAGE_CONSULT=off` also keeps your prompts off the wire, whatever the option says.
+- **Every prompt goes to a third party**, before the turn starts. Not slash commands, and not the notices Claude Code generates itself, such as the reports subagents hand back, but everything else. The hook tells a notice from a prompt only by its wording, because Claude Code passes hooks no origin, so a new kind of notice gets sent until kelpie learns its wording. A key alone sends no prompts: that takes the "Send prompts to Jev" option, which is off unless you turn it on. `KELPIE_TRIAGE_CONSULT=off` also keeps your prompts off the wire, whatever the option says.
 - **Every turn waits for it**, up to six seconds over two attempts. `KELPIE_TRIAGE_BUDGET_MS` and `KELPIE_TRIAGE_REQUEST_MS` change that.
 - **Nothing here can fail a turn.** A timeout, an error, or an unsure answer on a question that decides whether there is a route leaves `prefer` mode saying exactly what it says with no key. An unsure `difficulty` is read one level harder, so the route still arrives on a model that is safe to pick.
 

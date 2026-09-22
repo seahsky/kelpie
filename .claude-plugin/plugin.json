@@ -28,7 +28,7 @@
     "jev_send_prompts": {
       "type": "boolean",
       "title": "Send prompts to Jev",
-      "description": "Off unless you turn it on, and needs the Jev API key. On, kelpie sends the text of every prompt its delegation triage reads to api.typesafe.ai before the turn starts, and uses the answer to decide whether a subagent on a cheaper model can do the work for less than your session. Slash commands and the notices Claude Code generates itself are never sent. Off, the triage decides from keywords and no prompt leaves your machine.",
+      "description": "Off unless you turn it on, and needs the Jev API key. On, kelpie sends the text of every prompt its delegation triage reads to api.typesafe.ai before the turn starts, and uses the answer to decide whether a subagent on a cheaper model can do the work for less than your session. Slash commands and the notices Claude Code generates itself, such as the reports subagents hand back, are never sent. Off, the triage decides from keywords and no prompt leaves your machine.",
       "default": false
     }
   }

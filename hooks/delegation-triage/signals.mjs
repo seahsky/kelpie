@@ -34,10 +34,29 @@ export const SYNTHETIC_OPENERS = [
   'command-name',
   'command-message',
   'command-args',
+  'teammate-message',
+  'cross-session-message',
 ]
 const SYNTHETIC = new RegExp(`^\\s*<(?:${SYNTHETIC_OPENERS.join('|')})(?:[\\s>]|/>)`, 'i')
 
-export const isSynthetic = (text) => SYNTHETIC.test(text)
+/**
+ * Messages Claude Code submits that open with a sentence of its own rather than a tag, so the list above misses them.
+ *
+ * The peer sentence heads every report a background subagent or another session hands back. Missing it was a leak,
+ * not only a wasted note: in a real session a verifier's 6,789-character report, the repository's paths in it, went to
+ * Jev cut to 6,000 characters, and the plugin option promises that generated notices are never sent. The hook
+ * payload carries no origin field as of Claude Code 2.1.278, so the wording is the only signal there is. The stop and
+ * usage-reset sentences are copied from that build, the peer one from 26 of 26 such prompts in real transcripts.
+ */
+export const SYNTHETIC_SENTENCES = [
+  /^\s*Another Claude session sent a message:/,
+  // The name is the agent's description, which can carry quotes and line breaks, so only the ends are fixed.
+  /^\s*Background agent "[\s\S]*" was stopped by the user\.\s*$/,
+  /^\s*\d+ background agents were stopped by the user: "/,
+  /^\s*Your claude\.ai usage limit has reset\. Continue the task you were working on when the limit was reached;/,
+]
+
+export const isSynthetic = (text) => SYNTHETIC.test(text) || SYNTHETIC_SENTENCES.some((sentence) => sentence.test(text))
 
 const matches = (pattern) => (text) => pattern.test(text)
 
