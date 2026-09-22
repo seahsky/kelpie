@@ -18,7 +18,7 @@ That gives you three roles, a policy skill, four workflow commands, and a delega
 Claude Code asks for two optional settings as it enables the plugin: a Jev API key, and whether to send prompts to Jev.
 Prompts leave your machine only with both: a key, and "Send prompts to Jev" turned on.
 Without them, the triage decides from keywords.
-Read [the triage section](#with-jev-prefer-mode-asks-instead-of-guessing-from-keywords) before you turn it on.
+Read [the triage section](#with-jev-prefer-mode-asks-instead-of-guessing-from-keywords) before you turn it on, then follow [the setup steps](#setting-up-jev-for-the-triage).
 
 To try it without installing anything:
 
@@ -104,11 +104,39 @@ Three things to know before you turn it on.
 - **Every turn waits for it**, up to six seconds over two attempts. `KELPIE_TRIAGE_BUDGET_MS` and `KELPIE_TRIAGE_REQUEST_MS` change that.
 - **Nothing here can fail a turn.** A timeout, an error, or an unsure answer on a question that decides whether there is a route leaves `prefer` mode saying exactly what it says with no key. An unsure `difficulty` is read one level harder, so the route still arrives on a model that is safe to pick.
 
-To set either after installing, run `/plugin configure kelpie@kelpie`.
-"Send prompts to Jev" also appears in the `/config` panel; the key does not, because it is stored as a secret.
-Keys come from [console.typesafe.ai/keys](https://console.typesafe.ai/keys).
-
 This is the newest part of kelpie and the least measured.
+
+#### Setting up Jev for the triage
+
+1. **Get a key** at [console.typesafe.ai/keys](https://console.typesafe.ai/keys).
+   The triage calls `https://api.typesafe.ai/v1/systemone` on your key and your bill.
+2. **Set the key, and turn on "Send prompts to Jev".**
+   Claude Code asks for both as it enables the plugin.
+   If you skipped that prompt, run `/plugin configure kelpie@kelpie`.
+   To install and set both from a shell:
+
+   ```
+   claude plugin install kelpie@kelpie --config jev_api_key=YOUR_KEY --config jev_send_prompts=true
+   ```
+
+   The install line puts your key in your shell history; `/plugin configure` does not.
+   Do not paste the key into a chat or into `kelpie-triage.json`.
+   The plugin stores it as a secret, which is also why it does not appear in the `/config` panel and "Send prompts to Jev" does.
+3. **Keep the triage in `prefer` mode.**
+   Jev is asked in `prefer` mode only, and `prefer` is the default.
+   If you changed the mode, run `/kelpie:delegation-triage prefer`.
+   `KELPIE_TRIAGE` set to another mode, or `KELPIE_TRIAGE_CONSULT` set to any value but `auto`, also keeps Jev out.
+4. **Restart the session.**
+   The hook reads both options from its environment, and Claude Code builds that environment at session start.
+5. **Check that it asks.**
+   Turn on [the decision log](#the-decision-log) and send an ordinary prompt, not a slash command.
+   The `decision` line reads `"consulted": true` when every step above holds, and its `consult_reason` names the one that failed when it does not.
+   `"decided_by": "jev"` means Jev answered and its route became the note, which then starts with `decided with jev`.
+   `"decided_by": "signals"` with `"consulted": true` means the call failed or came back unsure, and the `jev_attempt` lines before it carry the HTTP status of each call.
+
+To stop sending prompts, turn off "Send prompts to Jev" in `/config` or `/plugin configure kelpie@kelpie`, and restart the session.
+The key stays set, so the spawn gate stays on.
+`KELPIE_TRIAGE_CONSULT=off` in the environment Claude Code starts from does the same, whatever the option says.
 
 ## The decision log
 
