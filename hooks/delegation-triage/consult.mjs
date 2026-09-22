@@ -26,7 +26,7 @@
 // reason to stop deciding.
 
 import { JEV_MODEL, JEV_URL, askJev, promptRequest } from '../jev-gate/jev.mjs'
-import { ROLE_RECON, STAGES, decidePrompt } from '../jev-gate/policy.mjs'
+import { ROLE_ANALYST, ROLE_RECON, STAGES, decidePrompt } from '../jev-gate/policy.mjs'
 import { countPaths } from './signals.mjs'
 import { fingerprint } from '../log.mjs'
 import { num, str } from '../env.mjs'
@@ -109,23 +109,42 @@ export const consult = async ({ prompt, sessionModel = null, env = {}, record = 
 /** "kelpie:mech-executor with model: sonnet", written the way the Agent tool call takes it. */
 const call = ({ agentType, model }) => (model === null ? `${agentType} at this session's own model` : `${agentType} with model: ${model}`)
 
-const routeLine = (decision) => (decision.agentType === ROLE_RECON
-  ? `- Send the lookup to ${call(decision)}: ${decision.reason}. You want the answer, not the file dumps.`
-  : `- Spawn ${call(decision)}: ${decision.reason}.`)
+const routeLine = (decision) => {
+  if (decision.agentType === ROLE_RECON) return `- Send the lookup to ${call(decision)}: ${decision.reason}. You want the answer, not the file dumps.`
+  if (decision.agentType === ROLE_ANALYST) return `- Send the question to ${call(decision)}: ${decision.reason}. You want the conclusion and the lines behind it, not the file dumps.`
+  return `- Spawn ${call(decision)}: ${decision.reason}.`
+}
 
 /**
  * The line that hands the price comparison to the model, when the hook could not make it.
  *
- * Only the first prompt of a session gets it in practice: after one assistant turn the transcript names the model
- * and decidePrompt compares the rungs itself.
+ * Only a headless session's first prompt gets it in practice. An interactive session's model is recorded at
+ * SessionStart, and after one assistant turn the transcript names it, so decidePrompt compares the rungs itself.
  */
 const onlyAboveLine = (model) => `- If this session runs on ${model} or a cheaper model, do the work here instead: a subagent on the same model pays for the hand-off and saves nothing.`
 
 const SPEC = '- Spec it in one shot: exact file paths, exact symbol names, acceptance criteria, and why the work matters. A subagent cannot ask you a question mid-task.'
 
+const ASK = '- Ask one exact question: the files or symbols it concerns, the claims to check if there are any, and what the answer is for. A subagent cannot ask you a question mid-task.'
+
+/** A lookup takes a question as it stands, a question that needs reasoning takes a sharp one, and work takes a spec. */
+const briefLine = (agentType) => (agentType === ROLE_RECON ? null : agentType === ROLE_ANALYST ? ASK : SPEC)
+
 const reviewLine = (review) => `- Then have ${call(review)} check the result. Where a test, type check, lint, or build settles the question, run that first and skip this: a verifier stage over 20 migration trials found nothing the check had not already named and took 74.8% of the arm's cost.`
 
 const STANDING = '- Security-sensitive work stays in this session whatever this says. Opus has been observed refusing delegated security tasks that it accepts inline.'
+
+/**
+ * The first line, which is the one a model acts on.
+ *
+ * A route that holds only above some model says so here rather than in a bullet under it. The unconditional
+ * "delegate this." once headed a note whose next lines said to keep the work on an Opus session, and an Opus
+ * session read the header and delegated at its own price.
+ */
+const verdict = (decision) => {
+  if (!decision.delegate) return 'keep this in this session.'
+  return decision.onlyAbove ? `delegate this only if this session runs on a model above ${decision.onlyAbove}.` : 'delegate this.'
+}
 
 /**
  * The note for a decided route.
@@ -135,7 +154,7 @@ const STANDING = '- Security-sensitive work stays in this session whatever this 
  * how the first run ended with a note delivered thirteen times and referenced zero times.
  */
 export const renderRoute = (decision) => {
-  const header = `kelpie delegation triage (prefer mode), decided with jev: ${decision.delegate ? 'delegate this.' : 'keep this in this session.'}`
+  const header = `kelpie delegation triage (prefer mode), decided with jev: ${verdict(decision)}`
   const lines = [header, '']
   if (decision.delegate) {
     const condition = decision.onlyAbove ? ` if this session runs on a model above ${decision.onlyAbove}` : ''
@@ -143,7 +162,8 @@ export const renderRoute = (decision) => {
     if (decision.onlyAbove) lines.push(onlyAboveLine(decision.onlyAbove))
     if (decision.precondition) lines.push(`- ${decision.precondition}. Then hand over what is left.`)
     lines.push(routeLine(decision))
-    if (decision.agentType !== ROLE_RECON) lines.push(SPEC)
+    const brief = briefLine(decision.agentType)
+    if (brief !== null) lines.push(brief)
   } else {
     lines.push(`${decision.reason.charAt(0).toUpperCase()}${decision.reason.slice(1)}.`)
     lines.push('- Prefer mode delegates when a subagent costs less than this session. This is a prompt where it does not, so do the work here.')

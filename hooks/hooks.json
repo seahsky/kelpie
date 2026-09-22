@@ -1,6 +1,17 @@
 {
-  "description": "kelpie: a delegation triage on every prompt, in prefer mode unless configured otherwise, and a per-spawn gate on Workflow calls that stays off without a Jev key.",
+  "description": "kelpie: a record of the session model at SessionStart, a delegation triage on every prompt, in prefer mode unless configured otherwise, and a per-spawn gate on Workflow calls that stays off without a Jev key.",
   "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}\"/hooks/session-model/record.mjs",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
     "UserPromptSubmit": [
       {
         "hooks": [

@@ -36,6 +36,14 @@ export const SYNTHETIC_OPENERS = [
   'command-args',
   'teammate-message',
   'cross-session-message',
+  // The rest of the wrapper list Claude Code 2.1.280 itself treats as synthetic user messages, read from the build.
+  'agent-message',
+  'remote-review',
+  'remote-review-progress',
+  'slack-ping',
+  'slack-tag-message',
+  'fetched-web-content',
+  'coordinator-relay',
 ]
 const SYNTHETIC = new RegExp(`^\\s*<(?:${SYNTHETIC_OPENERS.join('|')})(?:[\\s>]|/>)`, 'i')
 
@@ -47,9 +55,18 @@ const SYNTHETIC = new RegExp(`^\\s*<(?:${SYNTHETIC_OPENERS.join('|')})(?:[\\s>]|
  * Jev cut to 6,000 characters, and the plugin option promises that generated notices are never sent. The hook
  * payload carries no origin field as of Claude Code 2.1.278, so the wording is the only signal there is. The stop and
  * usage-reset sentences are copied from that build, the peer one from 26 of 26 such prompts in real transcripts.
+ *
+ * The peer sentence has a mid-turn form, "... while you were working:", and 2.1.280 adds a second peer wording and
+ * plugin, coordinator, and observer forms, all copied from that build. Matching only the first form leaked again: on
+ * 2026-09-23 a background kelpie:analyst's 4,852-character report reached Jev when it came back.
  */
 export const SYNTHETIC_SENTENCES = [
-  /^\s*Another Claude session sent a message:/,
+  /^\s*Another Claude session sent a message(?: while you were working)?:/,
+  /^\s*A peer session sent a message while you were working:/,
+  /^\s*The \S+ plugin sent a message(?: while you were working)?:/,
+  /^\s*The coordinator sent a message/,
+  /^\s*Your background observer \(/,
+  /^\s*\[Subagent hand-back\] /,
   // The name is the agent's description, which can carry quotes and line breaks, so only the ends are fixed.
   /^\s*Background agent "[\s\S]*" was stopped by the user\.\s*$/,
   /^\s*\d+ background agents were stopped by the user: "/,
@@ -163,6 +180,7 @@ const DECISION = [
   '- Fits in one context? Do it on the main thread. Forcing delegation measured 6.37x the cost of a plain prompt for the same 100% pass rate.',
   '- Same fully-specified change across more files than one context holds: kelpie:mech-executor, specified in one shot, no open decisions left.',
   '- Wide read-only lookups where you want the answer and not the file dumps: kelpie:recon, on Haiku. Built-in Explore runs on your own model.',
+  '- Read-only questions a lookup cannot answer, such as tracing a flow or checking a claim against the code: kelpie:analyst, on Sonnet.',
   '- A claim a test, type check, lint, or build can settle: run that check. kelpie:verifier is only for claims no executable check reaches.',
   '- Judgment calls and security-sensitive work stay on the main thread. Any ad-hoc fan-out sets model explicitly.',
 ]
@@ -176,6 +194,7 @@ const DECISION = [
 const ROUTES = [
   'Hand work to a subagent when it runs on a cheaper model than this session and the work is big enough to outrun the hand-off. A subagent on your own model pays for the hand-off and saves nothing, so where the cheapest model that fits is yours, do the work here.',
   '- Lookups that take more than a search or two: kelpie:recon, on Haiku. It reports what the code says, not what is wrong with it.',
+  '- Read-only questions that need reasoning, such as tracing a flow or checking a claim against the code: kelpie:analyst, on Sonnet. Ask it one exact question.',
   '- Fully-specified work: kelpie:mech-executor, on Sonnet unless you pass model: haiku for a pattern-only edit. Resolve every open decision first, then spec it in one shot with exact paths and acceptance criteria, because a subagent cannot ask you a question mid-task.',
   '- The same treatment across many files: a kelpie workflow, /kelpie:migrate-in-parallel or /kelpie:audit-many-files, which fans out and then settles correctness with one executable check.',
   '- A claim no test, type check, lint, or build can settle: kelpie:verifier. Where a check can settle it, run the check instead.',

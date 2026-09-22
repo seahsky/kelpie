@@ -13,7 +13,7 @@ claude plugin marketplace add seahsky/kelpie
 claude plugin install kelpie@kelpie
 ```
 
-That gives you three roles, a policy skill, four workflow commands, and a delegation triage that checks every prompt in `prefer` mode.
+That gives you four roles, a policy skill, four workflow commands, and a delegation triage that checks every prompt in `prefer` mode.
 
 Claude Code asks for two optional settings as it enables the plugin: a Jev API key, and whether to send prompts to Jev.
 Prompts leave your machine only with both: a key, and "Send prompts to Jev" turned on.
@@ -31,6 +31,7 @@ claude --plugin-dir /path/to/kelpie
 | Component | | For |
 |---|---|---|
 | `kelpie:recon` | haiku | Read-only lookups. Reports what the code says with `path:line`, never what is wrong with it |
+| `kelpie:analyst` | sonnet, medium | Read-only questions that need reasoning: trace a flow, check a claim against the code. One question, `path:line` evidence |
 | `kelpie:mech-executor` | sonnet, low | Fully-specified mechanical work. No open decisions left |
 | `kelpie:verifier` | inherit, medium | Adversarial check of a claim **no executable check can settle** |
 | [policy skill](skills/orchestration/SKILL.md) | ~80 tok always-on | When delegating pays, which role fits, when to run a check instead |
@@ -67,7 +68,7 @@ And nothing measured supports it yet: whether routing work to a cheaper model sa
 
 A subagent on your session's own model pays for the hand-off and saves nothing on price.
 That includes Claude Code's built-in `Explore`, which runs on your session's model, capped at Opus.
-So `prefer` mode sends lookups to `kelpie:recon` on Haiku and fully-specified work to `kelpie:mech-executor` on Sonnet, or on Haiku for a pattern-only edit, and only when that model is below yours.
+So `prefer` mode sends lookups to `kelpie:recon` on Haiku, read-only questions that need reasoning to `kelpie:analyst` on Sonnet, and fully-specified work to `kelpie:mech-executor` on Sonnet, or on Haiku for a pattern-only edit, and only when that model is below yours.
 Where the cheapest model that fits is your own, it says to do the work here.
 
 A cheaper model is not enough on its own.
@@ -95,8 +96,9 @@ hand-off (substantial 0.9), and sonnet is enough for it.
 
 The route names a model and no effort, because the Agent tool takes a model and has no effort parameter.
 
-On the first prompt of a session no hook can read your model: the transcript has no assistant turn yet, and no hook payload carries it.
-The note then says which model your session has to be above to take the route, and the model decides, since it knows what it runs on.
+On the first prompt of a session the transcript has no assistant turn yet, so kelpie reads your model from a record its SessionStart hook writes to the plugin's data directory.
+An interactive session's SessionStart payload names the model; a `claude -p` session's does not.
+There, and only there, the note's first line says which model your session has to be above to take the route, and the model decides, since it knows what it runs on.
 
 Three things to know before you turn it on.
 
@@ -214,6 +216,11 @@ Its brief keeps it to lookups, and every fact it reports carries the `path:line`
 Findings are ruled out, which is where the Haiku `scout` below went wrong.
 Unlike the Sonnet pin, this one is not measured.
 
+`analyst` is pinned to Sonnet at medium effort for read-only questions a lookup cannot answer, which `recon`'s brief sends back unanswered.
+Medium rather than low, because the Sonnet 5 effort docs warn of under-thinking at low on moderately complex tasks, and that is this role's work by definition.
+Its brief keeps it to the one question asked, so it cannot turn into the `scout` failure below.
+Like `recon`'s pin, this one is not measured.
+
 `mech-executor` is pinned to Sonnet because that pin is measured, and the "no open decisions left" bar is exactly what the measurement covers. On open-ended work the same tier fails expensively rather than cheaply.
 
 `verifier` stays on `inherit` because adversarial checking is the one place you want the session's full capability, and inheriting keeps the checker from out-ranking the session that called it. Repricing it does not rescue the delegated arm: Sonnet is a uniform 0.40x of Opus across every token class, taking mode B from $170.00 to $102.31, still 3.8x a plain prompt. The cost was never the pin, it was the turn loop.
@@ -248,12 +255,13 @@ From `claude plugin details kelpie` against this version. These are the CLI's es
 
 | Component | Always-on | On-invoke |
 |---|---|---|
-| `delegation-triage` skill | ~160 tok | ~3.9k tok |
+| `delegation-triage` skill | ~160 tok | ~4k tok |
 | `orchestration` skill | ~80 tok | ~3k tok |
-| `kelpie:recon` | ~140 tok | ~460 tok |
+| `kelpie:analyst` | ~170 tok | ~510 tok |
+| `kelpie:recon` | ~140 tok | ~450 tok |
 | `kelpie:mech-executor` | ~150 tok | ~190 tok |
-| `kelpie:verifier` | ~100 tok | ~460 tok |
-| **Total always-on** | **~625 tok** | — |
+| `kelpie:verifier` | ~100 tok | ~450 tok |
+| **Total always-on** | **~794 tok** | — |
 
 The table does not count the note the triage hook injects, since that lands only on prompts where it fires.
 The note runs 400 to 1,200 characters.

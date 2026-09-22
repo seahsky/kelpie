@@ -29,7 +29,7 @@ import { STAGES, applyConfidenceFloor, availableModels, clampDecision, decideFan
 import { JEV_MODEL, JEV_URL, askJev, fanoutRequest, verifyRequest } from './jev.mjs'
 import { fingerprint, logger, resolveLogPath, resolveVerbosity } from '../log.mjs'
 import { num, str } from '../env.mjs'
-import { resolveSession } from './session.mjs'
+import { recordedModelPath, resolveSession } from './session.mjs'
 
 const env = process.env
 // The key is a plugin option, so Claude Code hands it to this hook as CLAUDE_PLUGIN_OPTION_JEV_API_KEY and keeps the
@@ -249,7 +249,12 @@ const main = async () => {
   // The ceiling is the session's own model, because the gate's one hard promise is that it never routes a spawn above
   // it. A fable session's ceiling is opus, the rung below fable, so its hard spawns come down a rung instead of
   // staying on the most expensive model in the ladder.
-  const session = resolveSession({ transcriptPath: event.transcript_path, effortLevel: event.effort?.level, env })
+  const session = resolveSession({
+    transcriptPath: event.transcript_path,
+    effortLevel: event.effort?.level,
+    recordedPath: recordedModelPath({ dataDir: env.CLAUDE_PLUGIN_DATA, sessionId: event.session_id }),
+    env,
+  })
   const ceiling = MODEL_CEILING_OVERRIDE || session.model
   const ceilings = { model: modelCeiling(ceiling), effort: EFFORT_CEILING }
   if (MODE === 'jev' && ceilings.model === null) {
@@ -270,6 +275,7 @@ const main = async () => {
     kind,
     ceilings,
     session_model: session.model,
+    session_model_source: session.modelSource,
     session_effort: session.effort,
     // Recorded so a later stage can tell a gate that had one rung to choose from apart from one that had three.
     available_models: availableModels(ceilings.model),

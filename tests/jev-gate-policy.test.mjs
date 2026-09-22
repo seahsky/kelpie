@@ -7,6 +7,7 @@ import {
   PROMPT_DECISIVE,
   PROMPT_TIERING,
   PolicyError,
+  ROLE_ANALYST,
   ROLE_MECH,
   ROLE_RECON,
   ROLE_SESSION,
@@ -285,12 +286,37 @@ test('a subagent on the session\'s own model is never the route, because it pays
   assert.equal(routeFor({ difficulty: 0.1 }, 'haiku').delegate, false, 'nothing is cheaper than a haiku session')
 })
 
-test('read-only work goes to kelpie:recon, at the rung its difficulty needs', () => {
+test('a read-only lookup goes to kelpie:recon on haiku, with nothing to resolve first', () => {
   const lookup = routeFor({ readOnly: 0.8, difficulty: 0.1 })
   assert.equal(lookup.agentType, ROLE_RECON)
   assert.equal(lookup.model, 'haiku')
-  assert.equal(routeFor({ readOnly: 0.8, difficulty: 1.0 }).model, 'sonnet')
   assert.equal(routeFor({ readOnly: 0.8, specified: 0.1 }).precondition, undefined, 'a lookup has no design decision to resolve first')
+})
+
+test('read-only work that needs reasoning goes to kelpie:analyst, because recon stops at a judgment call', () => {
+  for (const answers of [{ readOnly: 0.8, difficulty: 1.0 }, { readOnly: 0.8, difficulty: 1.9, longHorizon: 0.2 }]) {
+    const route = routeFor(answers)
+    assert.equal(route.agentType, ROLE_ANALYST, JSON.stringify(answers))
+    assert.equal(route.model, 'sonnet', JSON.stringify(answers))
+    assert.equal(route.precondition, undefined)
+  }
+  const vague = routeFor({ readOnly: 0.8, difficulty: 1.0, specified: 0.2 })
+  assert.equal(vague.agentType, ROLE_ANALYST)
+  assert.match(vague.precondition, /Pin down the exact question here first \(fully_specified 0\.2\)/)
+})
+
+test('hard, long read-only work goes to the analyst at the top rung, and stays under an opus session', () => {
+  const answers = { readOnly: 0.9, difficulty: 1.92, longHorizon: 0.73 }
+  const fable = routeFor(answers, 'fable')
+  assert.equal(fable.agentType, ROLE_ANALYST)
+  assert.equal(fable.model, 'opus')
+  assert.equal(routeFor(answers, 'opus').delegate, false, 'the 2026-09-23 prompt: an opus analyst saves an opus session nothing')
+})
+
+test('an unsure mechanical read is read one level harder, which moves it from recon to the analyst', () => {
+  const route = routeFor({ readOnly: 0.8, difficulty: 0.2, confidence: 0.5 })
+  assert.equal(route.agentType, ROLE_ANALYST)
+  assert.equal(route.model, 'sonnet')
 })
 
 test('an open decision is resolved here first, and what is left goes out at the cheaper rung', () => {

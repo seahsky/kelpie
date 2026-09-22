@@ -97,6 +97,7 @@ test('the prefer note routes the work instead of arguing for the main thread', (
   assert.match(note, /cheaper model than this session/)
   assert.match(note, /A subagent on your own model pays for the hand-off and saves nothing/, 'the price rule is the reason to delegate at all')
   assert.match(note, /kelpie:recon, on Haiku/)
+  assert.match(note, /kelpie:analyst, on Sonnet/)
   assert.doesNotMatch(note, /Explore/, 'Explore runs on the session model, so it is never the cheaper route')
   assert.match(note, /\/kelpie:migrate-in-parallel/)
   assert.match(note, /open design decisions left in it, and security-sensitive work/, 'the two exclusions survive the inversion')
@@ -146,6 +147,12 @@ test('markup a user wrote is still read, because the list is enumerated and not 
   assert.ok(triage('<div> needs the same change in every component').score > 0, 'a user opening with markup still gets triaged')
 })
 
+test('every wrapper tag 2.1.280 treats as synthetic is quiet, including a background agent\'s report', () => {
+  for (const tag of ['agent-message', 'remote-review', 'remote-review-progress', 'slack-ping', 'slack-tag-message', 'fetched-web-content', 'coordinator-relay']) {
+    assert.equal(isSynthetic(`<${tag} from="a28bedd19e42eeef7">\nMigrate every handler across the codebase.\n</${tag}>`), true, tag)
+  }
+})
+
 test('a wrapper name has to be the whole tag, not a prefix of one', () => {
   assert.equal(isSynthetic('<task-notifications-are-broken> fix them across the repo'), false)
 })
@@ -157,6 +164,12 @@ const UNTAGGED_NOTICES = {
   'one agent stopped, its name quoting': 'Background agent "Research task. Say "done" when\nevery service is audited" was stopped by the user.',
   'several agents stopped': '2 background agents were stopped by the user: "audit every service", "migrate every handler across the codebase".',
   'the usage limit resetting': 'Your claude.ai usage limit has reset. Continue the task you were working on when the limit was reached; do not repeat work that is already complete.',
+  // The forms below are copied from the 2.1.280 build.
+  'a report handed back mid-turn': 'Another Claude session sent a message while you were working:\nMigrate every handler across the codebase.',
+  'a peer message mid-turn': 'A peer session sent a message while you were working:\nMigrate every handler across the codebase.',
+  'a plugin prompt': 'The kelpie plugin sent a message: migrate every handler across the codebase. This is how Claude Code surfaces a prompt a plugin submits between turns.',
+  'a coordinator message': 'The coordinator sent a message while you were working: migrate every handler across the codebase.',
+  'a subagent hand-back frame': '[Subagent hand-back] The text below is the final report of a subagent this session delegated to.\n  Migrate every handler across the codebase.',
 }
 
 test('a message Claude Code opens with its own sentence rather than a tag is quiet', () => {
