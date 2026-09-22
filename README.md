@@ -220,12 +220,12 @@ From `claude plugin details kelpie` against this version. These are the CLI's es
 
 | Component | Always-on | On-invoke |
 |---|---|---|
-| `delegation-triage` skill | ~150 tok | ~3.7k tok |
+| `delegation-triage` skill | ~160 tok | ~3.9k tok |
 | `orchestration` skill | ~80 tok | ~3k tok |
-| `kelpie:recon` | ~140 tok | ~450 tok |
+| `kelpie:recon` | ~140 tok | ~460 tok |
 | `kelpie:mech-executor` | ~150 tok | ~190 tok |
-| `kelpie:verifier` | ~100 tok | ~450 tok |
-| **Total always-on** | **~617 tok** | — |
+| `kelpie:verifier` | ~100 tok | ~460 tok |
+| **Total always-on** | **~625 tok** | — |
 
 The table does not count the note the triage hook injects, since that lands only on prompts where it fires.
 The note runs 400 to 1,200 characters.
