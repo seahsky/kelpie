@@ -27,6 +27,9 @@ const BASE = {
   KELPIE_GATE_JEV_URL: '',
   KELPIE_GATE_CONFIDENCE_FLOOR: '',
   CLAUDE_PLUGIN_OPTION_JEV_API_KEY: '',
+  // On for this file, because almost every test here is about what happens once prompts may be sent. The tests that
+  // turn it off are the ones about the opt-in itself.
+  CLAUDE_PLUGIN_OPTION_JEV_SEND_PROMPTS: 'true',
   // See delegation-triage.test.mjs: a user-scope config on the machine running the tests would otherwise decide them.
   CLAUDE_CONFIG_DIR: join(tmpdir(), 'kelpie-tests-no-user-config'),
 }
@@ -377,13 +380,51 @@ test('a 401 is not retried, and the turn is not failed over it', async () => {
   })
 })
 
-test('resolveConsult is prefer mode with a key, and says why when it is not', () => {
-  assert.deepEqual(resolveConsult({ mode: 'prefer', hasKey: true }), { on: true, reason: 'prefer mode with a key' })
-  assert.equal(resolveConsult({ mode: 'prefer', hasKey: false }).on, false)
-  assert.equal(resolveConsult({ mode: 'signals', hasKey: true }).on, false)
-  assert.equal(resolveConsult({ mode: 'off', hasKey: true }).on, false)
-  assert.equal(resolveConsult({ env: { KELPIE_TRIAGE_CONSULT: 'OFF' }, mode: 'prefer', hasKey: true }).on, false)
-  assert.equal(resolveConsult({ env: { KELPIE_TRIAGE_CONSULT: 'auto' }, mode: 'prefer', hasKey: true }).on, true)
+test('resolveConsult is prefer mode with a key and the opt-in, and says why when it is not', () => {
+  assert.deepEqual(resolveConsult({ mode: 'prefer', hasKey: true, allowed: true }), { on: true, reason: 'prefer mode with a key and jev_send_prompts on' })
+  assert.equal(resolveConsult({ mode: 'prefer', hasKey: false, allowed: true }).on, false)
+  assert.equal(resolveConsult({ mode: 'signals', hasKey: true, allowed: true }).on, false)
+  assert.equal(resolveConsult({ mode: 'off', hasKey: true, allowed: true }).on, false)
+  assert.equal(resolveConsult({ env: { KELPIE_TRIAGE_CONSULT: 'OFF' }, mode: 'prefer', hasKey: true, allowed: true }).on, false)
+  assert.equal(resolveConsult({ env: { KELPIE_TRIAGE_CONSULT: 'auto' }, mode: 'prefer', hasKey: true, allowed: true }).on, true)
+})
+
+test('a key alone is not consent to send prompts', () => {
+  const resolved = resolveConsult({ mode: 'prefer', hasKey: true })
+  assert.equal(resolved.on, false, 'the opt-in defaults to off')
+  assert.match(resolved.reason, /jev_send_prompts is not on/)
+})
+
+test('an install upgraded with only a spawn-gate key sends no prompt', async () => {
+  // Before prefer was the default, a key turned on the spawn gate and nothing else unless the user also chose prefer
+  // mode. That install has a key, no triage config, and has never seen the opt-in, which Claude Code then does not
+  // export at all. It lands in prefer mode by default, and must not start sending prompts because of it.
+  const cwd = await project(null)
+  const log = join(cwd, 'kelpie.jsonl')
+  await withStub(answering(), async ({ url, seen }) => {
+    const note = noteOf(await runHook(event(cwd, 'move every handler in src/api onto the new client'), {
+      CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'test-key',
+      CLAUDE_PLUGIN_OPTION_JEV_SEND_PROMPTS: '',
+      KELPIE_GATE_JEV_URL: url,
+      KELPIE_LOG: log,
+    }))
+    assert.equal(seen.length, 0)
+    assert.match(note, /prefer mode/, 'prefer mode still speaks, from keywords')
+  })
+  const decision = lineFor(await lines(log), 'decision')
+  assert.equal(decision.mode_source, 'default')
+  assert.equal(decision.consulted, false)
+  assert.match(decision.consult_reason, /jev_send_prompts is not on/)
+})
+
+test('the opt-in reads as on only when it says true', async () => {
+  for (const value of ['false', '0', 'no', 'yes', 'on', 'TRUE ']) {
+    const cwd = await project('prefer')
+    await withStub(answering(), async ({ url, seen }) => {
+      await runHook(event(cwd, MEASURED), { CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'test-key', CLAUDE_PLUGIN_OPTION_JEV_SEND_PROMPTS: value, KELPIE_GATE_JEV_URL: url })
+      assert.equal(seen.length, value.trim().toLowerCase() === 'true' ? 1 : 0, JSON.stringify(value))
+    })
+  }
 })
 
 test('a key of whitespace is no key, and nothing goes on the wire for it', async () => {

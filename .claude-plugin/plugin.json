@@ -21,9 +21,15 @@
     "jev_api_key": {
       "type": "string",
       "title": "Jev API key",
-      "description": "kelpie checks every prompt for work a subagent on a cheaper model can do for less than your session. With this key it asks TypeSafe AI's Jev how big and how hard the work is, so the text of every prompt it reads is sent to api.typesafe.ai before the turn starts; slash commands and the notices Claude Code generates itself are never sent. Without a key it decides from keywords and sends nothing. The same key turns on the spawn gate, which sends an excerpt of each file named in a gated Workflow call (up to 120 lines or 6000 characters) plus its path; files outside the working directory are never read or sent. Get a key at console.typesafe.ai/keys. Set KELPIE_TRIAGE_CONSULT=off to keep prompts on this machine while the key stays set. Nothing in kelpie's measured results depends on either feature yet.",
+      "description": "A key from console.typesafe.ai/keys for TypeSafe AI's Jev. It turns on the spawn gate, which sends an excerpt of each file named in a gated Workflow call (up to 120 lines or 6000 characters) plus its path; files outside the working directory are never read or sent. It sends no prompts on its own: that takes the Send prompts to Jev option as well. Without a key kelpie decides from keywords and sends nothing.",
       "sensitive": true,
       "required": false
+    },
+    "jev_send_prompts": {
+      "type": "boolean",
+      "title": "Send prompts to Jev",
+      "description": "Off unless you turn it on, and needs the Jev API key. On, kelpie sends the text of every prompt its delegation triage reads to api.typesafe.ai before the turn starts, and uses the answer to decide whether a subagent on a cheaper model can do the work for less than your session. Slash commands and the notices Claude Code generates itself are never sent. Off, the triage decides from keywords and no prompt leaves your machine.",
+      "default": false
     }
   }
 }

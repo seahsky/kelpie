@@ -15,10 +15,10 @@ claude plugin install kelpie@kelpie
 
 That gives you three roles, a policy skill, four workflow commands, and a delegation triage that checks every prompt in `prefer` mode.
 
-Claude Code asks for a Jev API key as it enables the plugin.
-The key is optional.
-Without one, the triage decides from keywords and nothing leaves your machine.
-With one, every prompt it reads is sent to TypeSafe AI's Jev first, so read [the triage section](#with-a-jev-key-prefer-mode-asks-instead-of-guessing-from-keywords) before you give it one.
+Claude Code asks for two optional settings as it enables the plugin: a Jev API key, and whether to send prompts to Jev.
+Prompts leave your machine only with both: a key, and "Send prompts to Jev" turned on.
+Without them, the triage decides from keywords.
+Read [the triage section](#with-jev-prefer-mode-asks-instead-of-guessing-from-keywords) before you turn it on.
 
 To try it without installing anything:
 
@@ -74,10 +74,10 @@ A cheaper model is not enough on its own.
 Forcing delegation measured 6.37x a plain prompt at a 1.14x cheaper blended price, because the turn loop multiplied the tokens.
 So the work also has to be big enough to outrun the hand-off: one grep is cheaper done in your session at any price.
 
-### With a Jev key, prefer mode asks instead of guessing from keywords
+### With Jev, prefer mode asks instead of guessing from keywords
 
-Without a key, `prefer` mode goes by keywords and speaks only on prompts that carry a delegation signal.
-Give the plugin a Jev API key and it sends the prompt instead, and gets back five answers about the work: whether it is big enough to hand over, whether it is read-only, whether anything is still undecided, how hard it is, and whether it is a long job.
+On its own, `prefer` mode goes by keywords and speaks only on prompts that carry a delegation signal.
+Give the plugin a Jev API key and turn on "Send prompts to Jev", and it sends the prompt instead, and gets back five answers about the work: whether it is big enough to hand over, whether it is read-only, whether anything is still undecided, how hard it is, and whether it is a long job.
 kelpie then picks the cheapest model the work can stand and compares it with your session's model.
 
 ```
@@ -98,13 +98,14 @@ The route names a model and no effort, because the Agent tool takes a model and 
 On the first prompt of a session no hook can read your model: the transcript has no assistant turn yet, and no hook payload carries it.
 The note then says which model your session has to be above to take the route, and the model decides, since it knows what it runs on.
 
-Three things to know before you give it a key.
+Three things to know before you turn it on.
 
-- **Every prompt goes to a third party**, before the turn starts. Not slash commands, and not the notices Claude Code generates itself, but everything else. `KELPIE_TRIAGE_CONSULT=off` keeps `prefer` mode and keeps your prompts off the wire.
+- **Every prompt goes to a third party**, before the turn starts. Not slash commands, and not the notices Claude Code generates itself, but everything else. A key alone sends no prompts: that takes the "Send prompts to Jev" option, which is off unless you turn it on. `KELPIE_TRIAGE_CONSULT=off` also keeps your prompts off the wire, whatever the option says.
 - **Every turn waits for it**, up to six seconds over two attempts. `KELPIE_TRIAGE_BUDGET_MS` and `KELPIE_TRIAGE_REQUEST_MS` change that.
 - **Nothing here can fail a turn.** A timeout, an error, or an unsure answer on a question that decides whether there is a route leaves `prefer` mode saying exactly what it says with no key. An unsure `difficulty` is read one level harder, so the route still arrives on a model that is safe to pick.
 
-To give it a key after installing, run `/plugin`, open kelpie, and use its configure flow.
+To set either after installing, run `/plugin configure kelpie@kelpie`.
+"Send prompts to Jev" also appears in the `/config` panel; the key does not, because it is stored as a secret.
 Keys come from [console.typesafe.ai/keys](https://console.typesafe.ai/keys).
 
 This is the newest part of kelpie and the least measured.
@@ -145,7 +146,7 @@ Each role carries one model and one effort for every task it will ever run. A th
 
 Clear the option to turn it back off. No key means no calls, no reads, and no output.
 
-The same key also turns on the prompt consult described above, in `prefer` mode, which is the default. If you want the gate and not that, set `KELPIE_TRIAGE_CONSULT=off`.
+The key does not send your prompts. The prompt consult described above needs the separate "Send prompts to Jev" option as well, which is off unless you turn it on.
 
 ### Before you turn it on
 

@@ -13,6 +13,15 @@ export const str = (value, fallback) => {
   return text === '' ? fallback : text
 }
 
+/**
+ * A boolean plugin option, which is on only when it says `true`.
+ *
+ * Measured on Claude Code 2.1.278: a boolean option set to true reaches a hook as the string `true`, and one left at
+ * its default or never set is not exported at all. `1` is accepted for a harness that sets the variable by hand.
+ * Anything else is off, because the switch this reads decides whether prompts leave the machine.
+ */
+export const flag = (value) => ['true', '1'].includes(str(value, '').toLowerCase())
+
 export const num = (value, fallback) => {
   const text = str(value, '')
   if (text === '') return fallback

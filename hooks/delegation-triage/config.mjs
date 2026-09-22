@@ -25,8 +25,8 @@ export const MODES = ['off', 'signals', 'always', 'prefer']
  * a job an Opus session would do itself that Sonnet or Haiku can do for less.
  *
  * Without a Jev key it runs on keywords at a bar of one signal, so a prompt with no delegation shape stays silent.
- * With a key, every prompt it reads is sent to a third party, and the key is the consent to that: Claude Code asks
- * for it when the plugin is enabled, and the prompt says what it turns on.
+ * Prompts go to Jev only with a key and the separate `jev_send_prompts` option on; see resolveConsult for why the
+ * key alone is not enough.
  */
 export const DEFAULT_MODE = 'prefer'
 
@@ -89,8 +89,14 @@ export const resolveThreshold = ({ env = {} } = {}) => {
 /**
  * Whether prefer mode asks Jev about this prompt before deciding, and why not when it does not.
  *
- * It is on by default in prefer mode with a key configured, because that is what prefer mode is for: a keyword score
- * cannot tell whether a job is big enough to hand over, or how cheap a model it can stand.
+ * It is on in prefer mode with a key and the `jev_send_prompts` plugin option, because that is what prefer mode is
+ * for: a keyword score cannot tell whether a job is big enough to hand over, or how cheap a model it can stand.
+ *
+ * The key alone is not consent. Before prefer was the default mode, the key turned on the spawn gate, and prompts
+ * went out only for users who had also chosen prefer mode. A user who set a key for the gate and never touched the
+ * triage would start sending every prompt on upgrade if the key counted. So sending prompts is its own option, and
+ * it is off unless the user turns it on: Claude Code does not export a boolean option left at its default, so an
+ * install that has never seen the option reads as off.
  *
  * It is prefer mode only. The other modes answer "stay on the main thread" by default and are right on almost every
  * prompt, so paying a network round trip to confirm the default buys nothing. `off` is the way out for anyone in
@@ -99,7 +105,7 @@ export const resolveThreshold = ({ env = {} } = {}) => {
  */
 export const CONSULT_SETTINGS = ['auto', 'off']
 
-export const resolveConsult = ({ env = {}, mode, hasKey = false } = {}) => {
+export const resolveConsult = ({ env = {}, mode, hasKey = false, allowed = false } = {}) => {
   const setting = typeof env.KELPIE_TRIAGE_CONSULT === 'string' ? env.KELPIE_TRIAGE_CONSULT.trim().toLowerCase() : ''
   // An unrecognised value turns it off, which is the opposite of how resolveMode treats one. The asymmetry is
   // deliberate: a typo in a switch that decides whether prompts leave the machine should leave them here. Somebody
@@ -108,7 +114,8 @@ export const resolveConsult = ({ env = {}, mode, hasKey = false } = {}) => {
   if (setting === 'off') return { on: false, reason: 'KELPIE_TRIAGE_CONSULT=off' }
   if (mode !== 'prefer') return { on: false, reason: `consulting is prefer mode only, and the mode is ${mode}` }
   if (!hasKey) return { on: false, reason: 'no jev_api_key plugin option' }
-  return { on: true, reason: 'prefer mode with a key' }
+  if (!allowed) return { on: false, reason: 'jev_send_prompts is not on, and a key alone does not send prompts' }
+  return { on: true, reason: 'prefer mode with a key and jev_send_prompts on' }
 }
 
 export const resolveMode = ({ env = {}, cwd = '', home = homedir(), modeInFileImpl = modeInFile } = {}) => {

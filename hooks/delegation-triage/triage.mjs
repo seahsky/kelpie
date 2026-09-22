@@ -30,7 +30,7 @@ import { fingerprint, logger, resolveLogPath, resolveVerbosity } from '../log.mj
 import { renderNote, thresholdFor, triage } from './signals.mjs'
 import { consult, renderRoute } from './consult.mjs'
 import { resolveSession } from '../jev-gate/session.mjs'
-import { str } from '../env.mjs'
+import { flag, str } from '../env.mjs'
 
 const readStdin = async () => {
   const chunks = []
@@ -79,7 +79,12 @@ const main = async () => {
   // Trimmed, and by the same helper the request builder uses. A key of spaces passed a raw presence check while
   // settings() trimmed it to nothing, so the consult ran and sent the prompt with an empty bearer token: a
   // misconfiguration that should read as "no key" instead put the prompt on the wire.
-  const consulting = resolveConsult({ env, mode, hasKey: str(env.CLAUDE_PLUGIN_OPTION_JEV_API_KEY, '') !== '' })
+  const consulting = resolveConsult({
+    env,
+    mode,
+    hasKey: str(env.CLAUDE_PLUGIN_OPTION_JEV_API_KEY, '') !== '',
+    allowed: flag(env.CLAUDE_PLUGIN_OPTION_JEV_SEND_PROMPTS),
+  })
   const session = consulting.on && !verdict.quiet
     ? resolveSession({ transcriptPath: event.transcript_path, effortLevel: event.effort?.level, env })
     : { model: null, effort: null }

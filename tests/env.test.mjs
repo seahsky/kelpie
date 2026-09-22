@@ -3,7 +3,7 @@
 // way, so the failures were an effort ceiling of '' that made each clamp throw and a Number('') budget of zero.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { num, str } from '../hooks/env.mjs'
+import { flag, num, str } from '../hooks/env.mjs'
 
 test('empty reaches the default, exactly as absent does', () => {
   assert.equal(str('', 'xhigh'), 'xhigh')
@@ -25,4 +25,11 @@ test('an empty number is the default and not zero, which would be a budget of no
 test('a value that is not a number falls back rather than becoming NaN', () => {
   assert.equal(num('soon', 6000), 6000)
   assert.equal(num('Infinity', 6000), 6000, 'a budget of forever is a hook that hangs')
+})
+
+test('a boolean option is on only when it says true, because absent is how Claude Code reports off', () => {
+  assert.equal(flag('true'), true)
+  assert.equal(flag(' TRUE '), true)
+  assert.equal(flag('1'), true)
+  for (const value of [undefined, null, '', 'false', '0', 'no', 'yes', 'on']) assert.equal(flag(value), false, JSON.stringify(value))
 })

@@ -18,6 +18,7 @@ const CLEARED = {
   KELPIE_TRIAGE_THRESHOLD: '',
   KELPIE_TRIAGE_CONSULT: 'off',
   CLAUDE_PLUGIN_OPTION_JEV_API_KEY: '',
+  CLAUDE_PLUGIN_OPTION_JEV_SEND_PROMPTS: '',
   KELPIE_LOG: '',
   KELPIE_LOG_PROMPTS: '',
   // The user-scope config lives here, and a machine that has run the skill has one. With no project file the hook
