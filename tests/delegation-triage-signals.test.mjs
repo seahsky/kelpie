@@ -150,6 +150,28 @@ test('a wrapper name has to be the whole tag, not a prefix of one', () => {
   assert.equal(isSynthetic('<task-notifications-are-broken> fix them across the repo'), false)
 })
 
+// Each body carries breadth on purpose, so a message that slipped through would score and not just go unnoticed.
+const UNTAGGED_NOTICES = {
+  'a report handed back': 'Another Claude session sent a message:\n<teammate-message teammate_id="recon">\nMigrate every handler across the codebase.\n</teammate-message>',
+  'one agent stopped': 'Background agent "migrate every handler across the codebase" was stopped by the user.',
+  'one agent stopped, its name quoting': 'Background agent "Research task. Say "done" when\nevery service is audited" was stopped by the user.',
+  'several agents stopped': '2 background agents were stopped by the user: "audit every service", "migrate every handler across the codebase".',
+  'the usage limit resetting': 'Your claude.ai usage limit has reset. Continue the task you were working on when the limit was reached; do not repeat work that is already complete.',
+}
+
+test('a message Claude Code opens with its own sentence rather than a tag is quiet', () => {
+  for (const [name, text] of Object.entries(UNTAGGED_NOTICES)) {
+    assert.equal(isSynthetic(text), true, `${name} should be quiet`)
+    assert.equal(triage(text).quiet, true, `${name} should be quiet`)
+  }
+})
+
+test('those sentences are wrappers only where they open the prompt', () => {
+  const quoting = 'Why does the hook read "Another Claude session sent a message:" as a prompt? It needs the same change in every component.'
+  assert.equal(isSynthetic(quoting), false)
+  assert.ok(triage(quoting).score > 0, 'a user quoting the wording is still triaged')
+})
+
 test('always mode with nothing fired still gets the one-liner, not the routes', () => {
   assert.match(renderNote({ fired: [], mode: 'always' }), /main thread is the default/)
 })

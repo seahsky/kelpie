@@ -309,6 +309,17 @@ test('a notice Claude Code generated is never sent anywhere', async () => {
   })
 })
 
+test('a report a subagent hands back is never sent anywhere', async () => {
+  // It opens with a plain sentence, not a tag, so the tag list never saw it. In a real session one of these, a
+  // verifier's 6,789-character report with the repository's paths in it, went to Jev cut to 6,000 characters.
+  const cwd = await project('prefer')
+  await withStub(answering(), async ({ url, seen }) => {
+    const handback = 'Another Claude session sent a message:\n<teammate-message teammate_id="verifier" color="green">\nThe design has two real flaws. Migrate every handler across the codebase before the first run.\n</teammate-message>'
+    assert.equal(await runHook(event(cwd, handback), { CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'test-key', KELPIE_GATE_JEV_URL: url }), '')
+    assert.equal(seen.length, 0)
+  })
+})
+
 test('the log records the call, the answers, the route, and who decided', async () => {
   const cwd = await project('prefer')
   const log = join(cwd, 'kelpie.jsonl')
