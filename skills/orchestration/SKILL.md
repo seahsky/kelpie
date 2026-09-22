@@ -1,15 +1,17 @@
 ---
 name: orchestration
-description: Delegation policy for kelpie — when delegating actually pays, which role fits, and when to run a check instead of a verifier. Consult before spawning a subagent or writing a workflow script in a project where kelpie is installed.
+description: Delegation policy for kelpie — when delegating actually pays, which role and model fit, and when to run a check instead of a verifier. Consult before spawning a subagent or writing a workflow script in a project where kelpie is installed.
 ---
 
-kelpie ships two roles as plugin agents (invoke as `kelpie:<role>`): `mech-executor` and `verifier`.
-It used to ship five.
-The other three were removed after kelpie's own benchmark measured them, and the measurements are in this file because they change what you should do, not as trivia.
+kelpie ships three roles as plugin agents (invoke as `kelpie:<role>`): `recon`, `mech-executor` and `verifier`.
+It once shipped five.
+Three were removed after kelpie's own benchmark measured them, and one of those, a Haiku finder, came back as `recon` with a narrower job.
+The measurements are in this file because they change what you should do, not as trivia.
 
-## Default to not delegating
+## Default to not delegating at your own model's price
 
 Delegation is a cost, paid up front, recovered only in specific shapes.
+A subagent on the same model as your session pays for the hand-off and saves nothing on price, so the saving has to come from a cheaper model doing work big enough to outrun the hand-off.
 Two measurements from kelpie's Stage 2 run (260 scored trials):
 
 - Over 180 trials on ordinary coding tasks, Opus 5 spawned a subagent **zero times**, with kelpie installed and without.
@@ -22,10 +24,11 @@ The lesson is not "never delegate."
 It is that a cheap worker does not make a task cheaper if delegating adds turns.
 A spawn that runs a 9-turn internal loop to answer one question costs more than answering it inline, at any tier.
 
-**Delegate when the work does not fit one context, or when independence is the point:**
+**Delegate when a cheaper model can do the work, when the work does not fit one context, or when independence is the point:**
 
+- Lookups that take more than a search or two: `kelpie:recon`, on Haiku.
+- Fully-specified work, once every decision in it is made: `kelpie:mech-executor`, on Sonnet.
 - More files than one context holds, each needing the same treatment.
-- Wide read-only search where you want the conclusion, not the file dumps.
 - A check that must not be done by whoever wrote the thing.
 
 **Do not delegate** a lookup you could do with one `Grep`, a judgment call you are better placed to make, or anything where the round trip costs more than the work.
@@ -34,7 +37,7 @@ A spawn that runs a 9-turn internal loop to answer one question costs more than 
 
 | Role | Model | Effort | For |
 |---|---|---|---|
-| built-in `Explore` | session, capped at Opus | — | Read-only recon and search. Not a kelpie role; use the one Claude Code already ships |
+| `kelpie:recon` | haiku | — | Read-only lookups: where something is defined or used, which files match, what the code says. Facts with `path:line`, never findings |
 | `kelpie:mech-executor` | sonnet | low | Fully-specified mechanical work: pattern refactors, convention-following tests, docs, bulk edits — no open decisions left |
 | `kelpie:verifier` | inherit | medium | Adversarial check of a claim **no executable check can settle** |
 
@@ -47,12 +50,14 @@ Across 896 spawns it changed 762 of 762 target files and touched 0 of 67 decoys,
 That evidence covers **fully-specified work only**.
 On open-ended work the same tier fails expensively rather than cheaply, so the "no open decisions left" bar in the role's description is load-bearing, not a style note.
 
-**Recon goes to built-in `Explore`, not a pinned-cheap role.**
-kelpie used to ship a Haiku `scout`.
-Measured, it manufactured 84 leads that a plain Opus prompt never generated, and the verifier then spent real money rejecting them.
-A cheap finder upstream of an expensive filter loses to not making the noise.
-`Explore` inherits the session model capped at Opus on the Claude API, so it is already tiered where tiering is safe.
-To run it cheaper, override it at user or project scope — a plugin cannot, because plugin agents are namespaced and the override is scoped to a bare `Explore`.
+**Recon goes to `kelpie:recon`, and it only looks things up.**
+Built-in `Explore` inherits your session's model, capped at Opus, so under an Opus session it is an Opus subagent: a hand-off with no cheaper price behind it.
+`kelpie:recon` runs on Haiku.
+Its brief is narrow on purpose.
+kelpie used to ship a Haiku `scout` that was asked to find problems, and it manufactured 84 leads that a plain Opus prompt never generated, which the verifier then spent real money rejecting.
+So `recon` reports what the code says, with `path:line`, and never what is wrong with it.
+Do not send it to find bugs, audit, or review; that is judgment, and judgment stays with you.
+For a lookup one `Grep` answers, run the `Grep`.
 
 **Security work gets no special role.**
 kelpie used to pin a `security-executor` to Opus on the theory that cheaper models refuse benign defensive work more readily.
@@ -96,16 +101,16 @@ For a stage that matches no role, set `model`/`effort` directly on `agent()`, or
 
 ## One landmine to know about
 
-If `CLAUDE_CODE_SUBAGENT_MODEL_FORCE=1` is set (Claude Code v2.1.257+), it overrides every subagent's `model` field — both kelpie roles and the built-in Explore/Plan agents — forcing them onto `CLAUDE_CODE_SUBAGENT_MODEL`, or the session model if that is the only one set.
+If `CLAUDE_CODE_SUBAGENT_MODEL_FORCE=1` is set (Claude Code v2.1.257+), it overrides every subagent's `model` field — every kelpie role and the built-in Explore/Plan agents — forcing them onto `CLAUDE_CODE_SUBAGENT_MODEL`, or the session model if that is the only one set.
 Two exceptions still run on the session model regardless: a forked conversation, and a skill run in a subagent with `model: inherit`.
 If a role appears to be running on the wrong model despite correct frontmatter, check this variable and the Claude Code version before assuming kelpie is broken.
 
 ## Making this decision happen every time
 
 kelpie ships a `UserPromptSubmit` hook that checks each prompt and puts this decision in front of you at the moment it matters.
-It is off until `/kelpie:delegation-triage` turns it on, per project or per user.
+It runs in `prefer` mode unless `/kelpie:delegation-triage` sets another mode, per project or per user.
 
-Which mode it is in changes what you get, and one of them changes the policy rather than restating it:
+Which mode it is in changes what you get:
 
+- `prefer`, the default, routes work to a subagent on a cheaper model when the work is big enough to outrun the hand-off, and says "do it here" when the cheapest model that fits is your own. With a Jev key and "Send prompts to Jev" on, it asks about every prompt it may read and names one route and one model. On the first prompt of a session it cannot read your model, so the route says which model you have to be above to take it; you know what you run on. Open design decisions and security-sensitive work stay on the main thread whatever the note says, because neither is a cost question.
 - `signals` injects a compressed form of the policy above on delegation-shaped prompts, and `always` does it on every prompt. Both lead with the main thread, so they are this file.
-- `prefer` inverts the default: the user has read the 6.37x and chosen to delegate anyway, so the note routes the work instead of arguing about whether to. With a Jev key it consults on every prompt it may read and names one route, one model and one effort. The two exclusions above survive the inversion, because neither is a cost question: open design decisions and security-sensitive work stay on the main thread whatever the note says.

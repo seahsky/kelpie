@@ -1,8 +1,8 @@
 {
   "name": "kelpie",
   "displayName": "Kelpie",
-  "version": "0.2.0",
-  "description": "Delegation policy for Claude Code, cut down to what its own benchmark supports: two pinned roles, a skill that argues against delegating by default, and an optional hook that puts that decision on every prompt.",
+  "version": "0.2.1",
+  "description": "Delegation policy for Claude Code, cut down to what its own benchmark supports: three pinned roles, a skill that argues against delegating at your own model's price, and a hook that checks every prompt for work a cheaper model can do for less.",
   "author": {
     "name": "seahsky"
   },
@@ -20,10 +20,16 @@
   "userConfig": {
     "jev_api_key": {
       "type": "string",
-      "title": "Jev API key (optional)",
-      "description": "Leave empty unless you want the two experimental features that need it. A key sends data to TypeSafe AI's Jev, and it turns on two flows. The spawn gate sends an excerpt of each file named in a gated Workflow call (up to 120 lines or 6000 characters) plus its path, and uses the answer to pick that spawn's role, model, and effort instead of the fixed pins in each role's frontmatter; files outside the working directory are never read or sent. Separately, if the delegation triage is in prefer mode, the text of every prompt it reads is sent before the turn starts, and the answer names one route: slash commands and the notices Claude Code generates itself are never sent, and KELPIE_TRIAGE_CONSULT=off keeps prefer mode while keeping prompts off the wire. Without a key both emit nothing and kelpie behaves exactly as it does without one. Nothing in kelpie's measured results depends on either, and the experiment that would judge them has not been run.",
+      "title": "Jev API key",
+      "description": "A key from console.typesafe.ai/keys for TypeSafe AI's Jev. It turns on the spawn gate, which sends an excerpt of each file named in a gated Workflow call (up to 120 lines or 6000 characters) plus its path; files outside the working directory are never read or sent. It sends no prompts on its own: that takes the Send prompts to Jev option as well. Without a key kelpie decides from keywords and sends nothing.",
       "sensitive": true,
       "required": false
+    },
+    "jev_send_prompts": {
+      "type": "boolean",
+      "title": "Send prompts to Jev",
+      "description": "Off unless you turn it on, and needs the Jev API key. On, kelpie sends the text of every prompt its delegation triage reads to api.typesafe.ai before the turn starts, and uses the answer to decide whether a subagent on a cheaper model can do the work for less than your session. Slash commands and the notices Claude Code generates itself are never sent. Off, the triage decides from keywords and no prompt leaves your machine.",
+      "default": false
     }
   }
 }

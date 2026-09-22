@@ -94,8 +94,10 @@ test('the prefer note routes the work instead of arguing for the main thread', (
   const result = triage('review this function')
   const note = renderNote({ ...result, mode: 'prefer' })
   assert.match(note, /prefer mode/)
-  assert.match(note, /opted into delegating by default/)
-  assert.match(note, /6\.37x/, 'the cost is stated even in the mode that accepts it')
+  assert.match(note, /cheaper model than this session/)
+  assert.match(note, /A subagent on your own model pays for the hand-off and saves nothing/, 'the price rule is the reason to delegate at all')
+  assert.match(note, /kelpie:recon, on Haiku/)
+  assert.doesNotMatch(note, /Explore/, 'Explore runs on the session model, so it is never the cheaper route')
   assert.match(note, /\/kelpie:migrate-in-parallel/)
   assert.match(note, /open design decisions left in it, and security-sensitive work/, 'the two exclusions survive the inversion')
   assert.doesNotMatch(note, /Do it on the main thread/)
@@ -127,7 +129,7 @@ test('a background task finishing is not a prompt, whatever it looks like', () =
 
 test('the notice is quiet even though its text would otherwise score', () => {
   // "across every package" carries breadth. Scoring it would be scoring Claude Code's own wording, not the user's.
-  assert.ok(triage('rebuild admin-portal across every package').score > 0, 'the wording does score on its own')
+  assert.ok(triage('rebuild the web app across every package').score > 0, 'the wording does score on its own')
   assert.equal(triage(TASK_NOTIFICATION).score, 0)
 })
 

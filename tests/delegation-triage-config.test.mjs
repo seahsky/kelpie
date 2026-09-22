@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { CONFIG_BASENAME, MODES, modeInFile, resolveMode, resolveThreshold, userConfigPath } from '../hooks/delegation-triage/config.mjs'
+import { CONFIG_BASENAME, DEFAULT_MODE, MODES, modeInFile, resolveMode, resolveThreshold, userConfigPath } from '../hooks/delegation-triage/config.mjs'
 
 const configured = async (prefix, contents) => {
   const dir = await mkdtemp(join(tmpdir(), prefix))
@@ -12,8 +12,14 @@ const configured = async (prefix, contents) => {
   return dir
 }
 
-test('an install that has never run the skill is off', () => {
-  assert.deepEqual(resolveMode({ env: {}, cwd: '/nonexistent', home: '/nonexistent' }), { mode: 'off', source: 'default' })
+test('an install that has never run the skill is in prefer mode', () => {
+  assert.equal(DEFAULT_MODE, 'prefer')
+  assert.deepEqual(resolveMode({ env: {}, cwd: '/nonexistent', home: '/nonexistent' }), { mode: 'prefer', source: 'default' })
+})
+
+test('off has to be written down now, because no file no longer means off', async () => {
+  const cwd = await configured('kelpie-triage-project-', '{"mode":"off"}')
+  assert.deepEqual(resolveMode({ env: {}, cwd, home: '/nonexistent' }), { mode: 'off', source: join(cwd, '.claude', CONFIG_BASENAME) })
 })
 
 test('a missing, unreadable, or malformed file is null rather than a guessed mode', () => {

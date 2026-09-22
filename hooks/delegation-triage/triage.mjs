@@ -4,19 +4,18 @@
 //
 // Why it exists. Over 180 trials in kelpie's Stage 2 run, Opus 5 spawned a subagent zero times, with the plugin
 // installed and without. The mechanism was there and the model never reached for it. This hook puts the decision in
-// front of the model on the prompts where it could go either way. It is a triage, not a push: the policy it injects
-// says the main thread wins unless the work does not fit one context, which is what the same benchmark measured.
-// The one exception is prefer mode, which a user opts into deliberately and which inverts that default.
+// front of the model on the prompts where it could go either way.
 //
-// Why it is off until you turn it on. A note on every prompt is context on every prompt, and on 180 of 180 measured
-// prompts the right answer was "do not delegate". Shipping it on would charge every install for a decision that is
-// already correct most of the time. `/kelpie:delegation-triage` writes the config file that turns it on.
+// Why it is on by default, in prefer mode. prefer mode hands work to a subagent only when that subagent runs on a
+// cheaper model than the session and the work is big enough to outrun the hand-off, so on most prompts it still says
+// "do it here", or nothing. What it adds is the case the model never reaches for on its own: a job an Opus session
+// would do itself that Sonnet or Haiku can do for less. See DEFAULT_MODE in config.mjs.
 //
-// Why prefer mode is different from the rest. The other modes decide from keyword signals, which is the right cost
-// for confirming a default that was correct on 180 of 180 measured prompts. prefer mode has opted out of that
-// default, so a keyword score is no longer enough: it cannot tell a job that splits from a job that does not. With a
-// Jev API key configured, prefer mode asks about the prompt instead and injects the route it gets back, naming the
-// agent, the model, the effort, and whether the result needs an independent review. See consult.mjs, which also
+// Why prefer mode is different from the rest. The other modes decide from keyword signals and argue for the main
+// thread, which is the right cost for confirming a default that was correct on 180 of 180 measured prompts. prefer
+// mode asks a different question, whether a cheaper model can do this job, and a keyword score cannot answer it.
+// With a Jev API key and the jev_send_prompts option on, prefer mode asks about the prompt instead and injects the route it gets back,
+// naming the agent, the model, and whether the result needs an independent review. See consult.mjs, which also
 // states what that costs: the text of every prompt it reads goes to a third party before the turn starts.
 //
 // It never rewrites the prompt and never blocks a turn. Every failure path emits nothing, which leaves the prompt
@@ -31,7 +30,7 @@ import { fingerprint, logger, resolveLogPath, resolveVerbosity } from '../log.mj
 import { renderNote, thresholdFor, triage } from './signals.mjs'
 import { consult, renderRoute } from './consult.mjs'
 import { resolveSession } from '../jev-gate/session.mjs'
-import { str } from '../env.mjs'
+import { flag, str } from '../env.mjs'
 
 const readStdin = async () => {
   const chunks = []
@@ -80,7 +79,12 @@ const main = async () => {
   // Trimmed, and by the same helper the request builder uses. A key of spaces passed a raw presence check while
   // settings() trimmed it to nothing, so the consult ran and sent the prompt with an empty bearer token: a
   // misconfiguration that should read as "no key" instead put the prompt on the wire.
-  const consulting = resolveConsult({ env, mode, hasKey: str(env.CLAUDE_PLUGIN_OPTION_JEV_API_KEY, '') !== '' })
+  const consulting = resolveConsult({
+    env,
+    mode,
+    hasKey: str(env.CLAUDE_PLUGIN_OPTION_JEV_API_KEY, '') !== '',
+    allowed: flag(env.CLAUDE_PLUGIN_OPTION_JEV_SEND_PROMPTS),
+  })
   const session = consulting.on && !verdict.quiet
     ? resolveSession({ transcriptPath: event.transcript_path, effortLevel: event.effort?.level, env })
     : { model: null, effort: null }
@@ -105,7 +109,7 @@ const main = async () => {
     consult_reason: consulting.reason,
     session_model: session.model,
     decided_by: route === null ? 'signals' : 'jev',
-    route: route === null ? null : { delegate: route.delegate, agentType: route.agentType, model: route.model, effort: route.effort, review: route.review },
+    route: route === null ? null : { delegate: route.delegate, agentType: route.agentType, model: route.model, only_above: route.onlyAbove ?? null, review: route.review },
     emitted: note !== null,
     reason: route === null ? verdict.reason : route.reason,
     prompt_chars: prompt.length,

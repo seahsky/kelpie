@@ -110,27 +110,33 @@ export const verifyRequest = ({ concern, pathCount, model = JEV_MODEL }) => ({
 // at UserPromptSubmit no file has been named yet: nothing has been read, nothing has been searched, and `task` is all
 // there is. A question that asks about `file_excerpt` when state carries none is a question answered against nothing.
 //
-// The pair that decides the route is DELEGATION_SAVES and READ_ONLY. The other three are the same two ladders the
-// spawn gate already runs on: difficulty picks the rung, and long_horizon with difficulty decides the review.
+// SUBSTANTIAL decides whether there is a route at all. READ_ONLY picks the agent. The other three are the same two
+// ladders the spawn gate already runs on: difficulty picks the rung, and long_horizon with difficulty decides the
+// review. None of them asks whether delegating costs less, because the answer to that is mostly arithmetic Jev
+// cannot see: which model this session runs on, and how much cheaper the rung is. policy.mjs does that part.
 
 /**
- * Whether splitting the work is cheaper than doing all of it in the session that was asked.
+ * Whether the work is big enough to be worth handing over at all.
  *
- * This is the question prefer mode turns on, so it is worded as the thing that actually drives the cost rather than
- * as a cost estimate. Delegation is cheap when the parts do not need each other, because then each worker carries
- * only its own part of the conversation; it is expensive when they do, because the hand-offs re-send what the last
- * worker already knew. kelpie's own Stage 2 run measured the expensive direction at 6.37x for the same pass rate.
+ * A subagent on a cheaper model saves in proportion to the work it does, and costs a fixed amount to start: a
+ * written brief, a cold context, and the result read back. So the size of the work is the one thing about it that
+ * decides whether the saving can outrun the hand-off. One grep is cheaper done here at any price.
+ *
+ * It replaced a question that asked whether splitting the work across several workers costs less than one engineer
+ * doing all of it. That question priced every worker the same as the session, so it could only ever be true for
+ * work with independent parts, and it came back false on all ten real tickets kelpie's benchmark ran. The rung table
+ * that picks a cheaper model was never reached, so prefer mode never once named one.
  */
-const DELEGATION_SAVES = {
+const SUBSTANTIAL = {
   type: 'noul',
-  instructions: 'The work in `task` costs less when it is split across several workers that run separately than when one engineer does all of it in one sitting. `paths_named` is how many file paths `task` writes out.',
+  instructions: 'Doing the work in `task` takes many steps: many searches, file reads, edits, or command runs, rather than one or two. `paths_named` is how many file paths `task` writes out.',
   criteria: {
-    true: 'The work has parts that can be done independently, and no part needs to know what another part found.',
-    false: 'The work is one piece, or each part needs what the part before it found, so splitting it adds hand-offs without removing any.',
+    true: 'It needs many searches, reads, edits, or runs, well past what one or two steps can do.',
+    false: 'One or two searches, reads, or edits finish it.',
   },
 }
 
-/** Read-only work has its own route, because Claude Code ships an agent for it and kelpie's own measurement says to use that one. */
+/** Read-only work has its own agent, because a lookup is the work a Haiku agent can do without a spec. */
 const READ_ONLY = {
   type: 'noul',
   instructions: '`task` asks only for information: finding, listing, locating, reading, or explaining. Nothing is written.',
@@ -173,8 +179,12 @@ const TASK_LONG_HORIZON = {
  * One request for one prompt. Five questions, one call, because the triage sits on the blocking path of the turn.
  *
  * `paths_named` is counted by the caller for the same reason `file_line_count` is: the jaggedness page states that
- * Jev does not count reliably and that the error grows with the number. It is in state because DELEGATION_SAVES
- * names it, not as background.
+ * Jev does not count reliably and that the error grows with the number. It is in state because SUBSTANTIAL names
+ * it, not as background.
+ *
+ * The session's model is not in state, even though the route turns on it. No question asks about it, and state no
+ * question consults is the context-rot failure mode the jaggedness page lists. policy.mjs compares the rung with
+ * the session model after the answers are back.
  *
  * The prompt is excerpted to the same budget as a file, so a pasted stack trace cannot push state past 32k.
  */
@@ -185,7 +195,7 @@ export const promptRequest = ({ task, pathsNamed = 0, model = JEV_MODEL }) => ({
     paths_named: pathsNamed,
   },
   questions: {
-    delegation_saves: DELEGATION_SAVES,
+    substantial: SUBSTANTIAL,
     read_only: READ_ONLY,
     fully_specified: TASK_FULLY_SPECIFIED,
     difficulty: TASK_DIFFICULTY,

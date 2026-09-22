@@ -9,10 +9,11 @@
 // the words.
 //
 // So in prefer mode the keyword score stops being the gate. It is still computed and still logged, because it is
-// what the other modes run on and a disagreement between it and Jev is worth being able to read. The decision is
-// Jev's, over five questions asked in one call: does splitting this cost less, is it read-only, is it fully
-// specified, how hard is it, and is it a long job. The last two are the same difficulty and review gates the spawn
-// gate already runs, entered one step earlier, so a prompt-level route and a per-file route cannot drift apart.
+// what the other modes run on and a disagreement between it and Jev is worth being able to read. Jev is asked five
+// questions about the work in one call: is it big enough to hand over, is it read-only, is it fully specified, how
+// hard is it, and is it a long job. The last two are the same difficulty and review gates the spawn gate already
+// runs, entered one step earlier, so a prompt-level route and a per-file route cannot drift apart. Whether the
+// cheapest model that fits is cheaper than this session's is not asked: policy.mjs computes it from the answers.
 //
 // What this costs, stated plainly because it is the reason the setting exists. With it on, the text of every prompt
 // the triage reads is POSTed to api.typesafe.ai before the turn starts, and the turn waits for the answer. The
@@ -25,7 +26,7 @@
 // reason to stop deciding.
 
 import { JEV_MODEL, JEV_URL, askJev, promptRequest } from '../jev-gate/jev.mjs'
-import { MODELS_WITHOUT_EFFORT, ROLE_EXPLORE, ROLE_GENERAL, ROLE_MECH, ROLE_VERIFIER, STAGES, applyPromptFloor, clampDecision, decidePrompt, modelCeiling } from '../jev-gate/policy.mjs'
+import { ROLE_RECON, STAGES, decidePrompt } from '../jev-gate/policy.mjs'
 import { countPaths } from './signals.mjs'
 import { fingerprint } from '../log.mjs'
 import { num, str } from '../env.mjs'
@@ -41,9 +42,8 @@ export const DEFAULT_BUDGET_MS = 6000
 export const DEFAULT_REQUEST_MS = 3000
 export const MAX_ATTEMPTS = 2
 
-/** Effort is capped where the spawn gate caps it. A triage may not route a spawn past what the gate would allow. */
-export const EFFORT_CEILING = 'xhigh'
-
+// No effort ceiling here, unlike the spawn gate. A prompt-level route names no effort at all, because the Agent tool
+// that carries it out takes a model and has no effort parameter. See decidePrompt.
 export const settings = ({ env = {} } = {}) => ({
   apiKey: str(env.CLAUDE_PLUGIN_OPTION_JEV_API_KEY, ''),
   url: str(env.KELPIE_GATE_JEV_URL, JEV_URL),
@@ -51,20 +51,18 @@ export const settings = ({ env = {} } = {}) => ({
   budgetMs: num(env.KELPIE_TRIAGE_BUDGET_MS, DEFAULT_BUDGET_MS),
   requestMs: num(env.KELPIE_TRIAGE_REQUEST_MS, DEFAULT_REQUEST_MS),
   confidenceFloor: num(env.KELPIE_GATE_CONFIDENCE_FLOOR, 0.6),
-  effortCeiling: str(env.KELPIE_GATE_EFFORT_CEILING, EFFORT_CEILING),
 })
 
 /**
  * Ask about one prompt, and return the route or null.
  *
  * `record` is the caller's logger, so the triage's decision and the call that informed it land on adjacent lines of
- * one file. `sessionModel` may be null: see decidePrompt for why that names a route with no model rather than no
- * route at all.
+ * one file. `sessionModel` is the session's tier, or null on the first prompt of a session: see decidePrompt for why
+ * that still names a route, and how the note hands the price comparison to the model.
  */
 export const consult = async ({ prompt, sessionModel = null, env = {}, record = () => {}, verbosity = { prompts: false }, fetchImpl = undefined, now = () => Date.now() }) => {
   const config = settings({ env })
   const task = typeof prompt === 'string' ? prompt : ''
-  const ceilings = { model: modelCeiling(sessionModel), effort: config.effortCeiling }
   const request = promptRequest({ task, pathsNamed: countPaths(task), model: config.jevModel })
   const sent = request.state.task
   // Logged before it goes, for the same reason the spawn gate logs a file excerpt before it goes: this is a hook
@@ -94,44 +92,38 @@ export const consult = async ({ prompt, sessionModel = null, env = {}, record = 
       ...(fetchImpl ? { fetchImpl } : {}),
       onAttempt: (attempt) => record({ event: 'jev_attempt', stage: STAGES.PROMPT, path: null, ...attempt }),
     })
-    const floored = applyPromptFloor(decidePrompt(answers, ceilings), answers, config.confidenceFloor)
-    const decision = clampDecision(floored, ceilings)
-    record({ event: 'jev_decision', stage: STAGES.PROMPT, path: null, ms: now() - started, asked: true, answers, ceilings, decision })
-    // Only an unsure decisive answer lands here. An unsure tier keeps the route and names no model, which is the
-    // difference between declining a rung and declining to answer. See applyPromptFloor.
+    const decision = decidePrompt(answers, { session: sessionModel, floor: config.confidenceFloor })
+    record({ event: 'jev_decision', stage: STAGES.PROMPT, path: null, ms: now() - started, asked: true, answers, session_model: sessionModel, decision })
+    // Only an unsure decisive answer lands here. An unsure tier moves the rung up and keeps the route, which is the
+    // difference between hedging a rung and declining to answer. See decidePrompt.
     return decision.delegate === null ? null : decision
   } catch (error) {
     // Covers both a call that did not come back and an answer that came back unreadable, because either way no route
     // was established and the caller does the same thing about it.
     const reason = `no route from jev: ${error && error.message ? error.message : String(error)}`
-    record({ event: 'jev_decision', stage: STAGES.PROMPT, path: null, ms: now() - started, asked: true, answers: null, ceilings, reason, decision: null })
+    record({ event: 'jev_decision', stage: STAGES.PROMPT, path: null, ms: now() - started, asked: true, answers: null, session_model: sessionModel, reason, decision: null })
     return null
   }
 }
 
-/** "model sonnet, effort medium", or what to say when a field is deliberately unset. */
-const tier = ({ model, effort }) => {
-  if (model === null && effort === null) return "at this session's own model and effort"
-  if (model === null) return `at this session's model, effort ${effort}`
-  if (effort === null) {
-    return MODELS_WITHOUT_EFFORT.has(model) ? `model ${model}, which takes no effort parameter` : `model ${model}`
-  }
-  return `model ${model}, effort ${effort}`
-}
+/** "kelpie:mech-executor with model: sonnet", written the way the Agent tool call takes it. */
+const call = ({ agentType, model }) => (model === null ? `${agentType} at this session's own model` : `${agentType} with model: ${model}`)
 
-const routeLine = (decision) => {
-  if (decision.agentType === ROLE_EXPLORE) {
-    return `- Send it to the built-in Explore agent, ${tier(decision)}: ${decision.reason}. You want the conclusion, not the file dumps.`
-  }
-  if (decision.agentType === ROLE_GENERAL) {
-    return `- ${decision.precondition}, then hand the rest to general-purpose, ${tier(decision)}: ${decision.reason}. Nothing measured supports handing an open decision to a cheaper tier.`
-  }
-  return `- Spawn ${ROLE_MECH}, ${tier(decision)}: ${decision.reason}.`
-}
+const routeLine = (decision) => (decision.agentType === ROLE_RECON
+  ? `- Send the lookup to ${call(decision)}: ${decision.reason}. You want the answer, not the file dumps.`
+  : `- Spawn ${call(decision)}: ${decision.reason}.`)
+
+/**
+ * The line that hands the price comparison to the model, when the hook could not make it.
+ *
+ * Only the first prompt of a session gets it in practice: after one assistant turn the transcript names the model
+ * and decidePrompt compares the rungs itself.
+ */
+const onlyAboveLine = (model) => `- If this session runs on ${model} or a cheaper model, do the work here instead: a subagent on the same model pays for the hand-off and saves nothing.`
 
 const SPEC = '- Spec it in one shot: exact file paths, exact symbol names, acceptance criteria, and why the work matters. A subagent cannot ask you a question mid-task.'
 
-const reviewLine = (review) => `- Then have ${ROLE_VERIFIER} check the result, ${tier(review)}. Where a test, type check, lint, or build settles the question, run that first and skip this: a verifier stage over 20 migration trials found nothing the check had not already named and took 74.8% of the arm's cost.`
+const reviewLine = (review) => `- Then have ${call(review)} check the result. Where a test, type check, lint, or build settles the question, run that first and skip this: a verifier stage over 20 migration trials found nothing the check had not already named and took 74.8% of the arm's cost.`
 
 const STANDING = '- Security-sensitive work stays in this session whatever this says. Opus has been observed refusing delegated security tasks that it accepts inline.'
 
@@ -146,12 +138,15 @@ export const renderRoute = (decision) => {
   const header = `kelpie delegation triage (prefer mode), decided with jev: ${decision.delegate ? 'delegate this.' : 'keep this in this session.'}`
   const lines = [header, '']
   if (decision.delegate) {
-    lines.push(`Splitting the work costs less than doing all of it in this session (delegation_saves ${decision.saves}).`)
+    const condition = decision.onlyAbove ? ` if this session runs on a model above ${decision.onlyAbove}` : ''
+    lines.push(`A subagent on ${decision.model} costs less than doing this here${condition}: the work is big enough to outrun the hand-off (substantial ${decision.substantial}), and ${decision.model} is enough for it.`)
+    if (decision.onlyAbove) lines.push(onlyAboveLine(decision.onlyAbove))
+    if (decision.precondition) lines.push(`- ${decision.precondition}. Then hand over what is left.`)
     lines.push(routeLine(decision))
-    if (decision.agentType !== ROLE_EXPLORE) lines.push(SPEC)
+    if (decision.agentType !== ROLE_RECON) lines.push(SPEC)
   } else {
     lines.push(`${decision.reason.charAt(0).toUpperCase()}${decision.reason.slice(1)}.`)
-    lines.push('- Prefer mode delegates by default. This is a prompt where it does not, so do the work here.')
+    lines.push('- Prefer mode delegates when a subagent costs less than this session. This is a prompt where it does not, so do the work here.')
   }
   if (decision.review) lines.push(reviewLine(decision.review))
   lines.push(STANDING)

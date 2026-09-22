@@ -3,6 +3,8 @@
 // A decision names three things for one spawn: which role, which model, and which reasoning effort.
 // `null` in any field means "leave the shipped default alone", which is what makes the static arm a known null.
 
+import { MODEL_TIERS } from './session.mjs'
+
 /** Cheapest first. `fable` is absent on purpose: at $10/Mtok input against opus's $5, routing up to it can never be a saving. */
 export const MODEL_LADDER = ['haiku', 'sonnet', 'opus']
 
@@ -20,12 +22,16 @@ export const ROLE_VERIFIER = 'kelpie:verifier'
 /** The session tier carries no agentType, so the spawn inherits the main session's model and effort. */
 export const ROLE_SESSION = null
 
-// Two agents Claude Code ships, named here because a prompt-level route can reach them and a workflow stage cannot.
-// `Explore` is the recon route: skills/orchestration/SKILL.md says to use it rather than a pinned-cheap finder,
-// because kelpie's own Haiku scout manufactured 84 leads a plain Opus prompt never generated. `general-purpose` is
-// the session-tier route, used where the work is real work but nothing supports moving it off the session's model.
-export const ROLE_EXPLORE = 'Explore'
-export const ROLE_GENERAL = 'general-purpose'
+/**
+ * The recon route, and why it is kelpie's own agent rather than the built-in Explore.
+ *
+ * Explore inherits the session's model, capped at Opus (code.claude.com/docs/en/sub-agents, since v2.1.198), so under
+ * an Opus session it is an Opus subagent: a hand-off with no cheaper price behind it. On run 02 the only three spawns
+ * in thirty sessions were Explore, and all three billed Opus alone. `kelpie:recon` is pinned to Haiku, and its brief
+ * is scoped to lookups, because kelpie's earlier Haiku `scout` was asked to find problems and manufactured 84 leads
+ * that a plain Opus prompt never produced.
+ */
+export const ROLE_RECON = 'kelpie:recon'
 
 /**
  * The stages the gate can reach.
@@ -134,6 +140,8 @@ export const staticDecision = (stage) => {
 /** Boundaries of a 3-level Score. The docs say a Score lands between levels, so a level owns the half-unit either side of it. */
 const SCORE_MECHANICAL = 0.5
 const SCORE_MODERATE = 1.5
+/** The highest level a 3-level Score can name. */
+const SCORE_TOP = 2
 /** A Noul is absolute, so 0.5 is its own midpoint and needs no tuning. */
 const NOUL_MIDPOINT = 0.5
 
@@ -259,97 +267,15 @@ export const decideVerify = (answers) => {
 }
 
 /**
- * Turn one prompt's answers into a route, for the delegation triage in prefer mode.
- *
- * This is the same two ladders the fan-out stages run on, entered one question earlier. `delegation_saves` is the new
- * one, and it is the whole inversion prefer mode asks for: the work is delegated unless doing all of it in this
- * session costs less. Every other mode asks the opposite question and answers it "stay here" by default, which is
- * right on the 180 of 180 measured prompts where the main thread won. prefer mode is the opt-in where it is not.
- *
- * The route then falls out of the remaining four answers:
- *
- *   saves false            -> stay in this session. The one case prefer mode does not delegate
- *   read-only              -> built-in Explore, inheriting the session tier
- *   an open decision left  -> general-purpose at the session tier, after the decision is resolved here
- *   mechanical             -> kelpie:mech-executor, haiku, no effort
- *   moderate               -> kelpie:mech-executor, sonnet, medium
- *   hard                   -> kelpie:mech-executor, sonnet, high
- *   hard and long-horizon  -> kelpie:mech-executor, the top reachable rung, xhigh
- *
- * Under-specified work names no model on purpose. skills/orchestration/SKILL.md scopes the sonnet pin on
- * `mech-executor` to fully-specified work and states the reason: "On open-ended work the same tier fails expensively
- * rather than cheaply, so the 'no open decisions left' bar in the role's description is load-bearing." So an open
- * decision costs the route its tiering, not its delegation: the decision is resolved in this session, and what is
- * handed out afterwards runs at the session's own model.
- *
- * The review gate runs on every route, this session's own work included. A hard, long job checked only by whoever
- * did it is the self-certification blind spot SKILL.md names, and that does not stop being true because nothing was
- * spawned.
- *
- * An unresolved session model is handled differently here than in the spawn gate. There, no known ceiling means no
- * route can be shown to be downward, so the gate emits nothing. Here, going quiet on an unresolved model would make
- * the triage silent on the first prompt of every session, before any assistant turn has been written to the
- * transcript to read a model from. So the route is named and no model is: a route that names no model inherits the
- * session's, which cannot be above it.
- */
-export const decidePrompt = (answers, ceilings) => {
-  const saves = answers.delegation_saves?.noul
-  const readOnly = answers.read_only?.noul
-  const specified = answers.fully_specified?.noul
-  const difficulty = answers.difficulty?.score
-  const longHorizon = answers.long_horizon?.noul
-  for (const [id, value] of [['delegation_saves.noul', saves], ['read_only.noul', readOnly], ['fully_specified.noul', specified], ['difficulty.score', difficulty], ['long_horizon.noul', longHorizon]]) {
-    if (typeof value !== 'number' || Number.isNaN(value)) {
-      throw new PolicyError(`${STAGES.PROMPT}: answers must carry a numeric ${id}`)
-    }
-  }
-  if (!ceilings) throw new PolicyError(`${STAGES.PROMPT}: ceilings must be given, even with a null model in them`)
-  const review = decideReview(difficulty, longHorizon, ceilings)
-  const rung = (model) => (ceilings.model === null ? null : model)
-  // `saves` rides along on every route, because it is the answer that decided whether there is a route at all and
-  // the note says so rather than making the reader take the verdict on trust.
-  const route = (fields) => ({ delegate: true, saves, review, source: 'jev', ...fields })
-  if (saves < NOUL_MIDPOINT) {
-    return { delegate: false, saves, agentType: ROLE_SESSION, model: null, effort: null, review, source: 'jev', reason: `doing all of it in this session costs less than splitting it (delegation_saves ${saves})` }
-  }
-  if (readOnly >= NOUL_MIDPOINT) {
-    return route({ agentType: ROLE_EXPLORE, model: null, effort: null, reason: `read-only recon (read_only ${readOnly})` })
-  }
-  if (specified < NOUL_MIDPOINT) {
-    return route({
-      agentType: ROLE_GENERAL,
-      model: null,
-      effort: null,
-      precondition: 'Resolve every open decision here first',
-      reason: `an open decision is left in it (fully_specified ${specified})`,
-    })
-  }
-  if (difficulty < SCORE_MECHANICAL) {
-    return route({ agentType: ROLE_MECH, model: rung('haiku'), effort: null, reason: `mechanical (difficulty ${difficulty})` })
-  }
-  if (difficulty < SCORE_MODERATE) {
-    return route({ agentType: ROLE_MECH, model: rung('sonnet'), effort: 'medium', reason: `moderate (difficulty ${difficulty})` })
-  }
-  if (longHorizon < NOUL_MIDPOINT) {
-    return route({ agentType: ROLE_MECH, model: rung('sonnet'), effort: 'high', reason: `hard (difficulty ${difficulty}, long_horizon ${longHorizon})` })
-  }
-  return route({ agentType: ROLE_MECH, model: rung(ceilings.model), effort: 'xhigh', reason: `hard and long-horizon (difficulty ${difficulty}, long_horizon ${longHorizon})` })
-}
-
-/**
  * Which prompt answers decide whether there is a route, and which only decide how it is tiered.
  *
- * The split exists because the flat floor threw away a verdict it had no business judging. Measured on the first
- * real call: `delegation_saves` came back 0.2, which settles the route on its own and never reaches the rung table,
- * and `difficulty` came back 1.68 at confidence 0.52. The flat floor took the lowest confidence across all five
- * answers, found the 0.52, and discarded the whole decision, so the arm paid a round trip and fell back to the note
- * it would have had with no key at all.
- *
- * A Noul carries no confidence field, so in practice the decisive list never trips the floor today. It is listed
- * anyway, because the rule is about which answer is load-bearing rather than about which type happens to report a
- * confidence.
+ * The split exists because a flat floor once threw away a verdict it had no business judging: the answer that
+ * settled the route carried no confidence at all, and the difficulty answer came back at 0.52 against a floor of
+ * 0.6, so the lowest confidence across all five discarded the whole decision. A Noul carries no confidence field, so
+ * in practice the decisive list never trips the floor today. It is listed anyway, because the rule is about which
+ * answer is load-bearing rather than about which type happens to report a confidence.
  */
-export const PROMPT_DECISIVE = ['delegation_saves', 'read_only', 'fully_specified']
+export const PROMPT_DECISIVE = ['substantial', 'read_only', 'fully_specified']
 export const PROMPT_TIERING = ['difficulty', 'long_horizon']
 
 const lowestConfidence = (answers, ids) => {
@@ -360,31 +286,109 @@ const lowestConfidence = (answers, ids) => {
   return seen.length > 0 ? Math.min(...seen) : null
 }
 
+/** The rung a prompt's work needs, cheapest first: 0 is haiku, 1 is sonnet, 2 is the top rung the session allows. */
+const promptRung = (difficulty, longHorizon) => {
+  if (difficulty < SCORE_MECHANICAL) return 0
+  if (difficulty < SCORE_MODERATE) return 1
+  return longHorizon < NOUL_MIDPOINT ? 1 : 2
+}
+
+const rungReason = (difficulty, longHorizon) => {
+  if (difficulty < SCORE_MECHANICAL) return `mechanical (difficulty ${difficulty})`
+  if (difficulty < SCORE_MODERATE) return `moderate (difficulty ${difficulty})`
+  return longHorizon < NOUL_MIDPOINT
+    ? `hard (difficulty ${difficulty}, long_horizon ${longHorizon})`
+    : `hard and long-horizon (difficulty ${difficulty}, long_horizon ${longHorizon})`
+}
+
 /**
- * The confidence floor for a prompt route, applied per answer rather than across all of them.
+ * Turn one prompt's answers into a route, for the delegation triage in prefer mode.
  *
- * An unsure decisive answer means no route, and the mode's own note is a better answer than a route nobody stands
- * behind. An unsure tiering answer costs the route its rung and its review, not its delegation: the route still
- * names an agent, and a route that names no model inherits the session's, which is the safe direction.
+ * The rule is the one prefer mode exists for: hand the work to a subagent when that costs less than doing it here,
+ * and only then. Two conditions have to hold together. The work has to be big enough that a saving on every step
+ * outruns the fixed cost of the hand-off, which is `substantial`. And the subagent has to run on a cheaper model than
+ * this session, because a subagent on the same model pays the hand-off and saves nothing on price. The second
+ * condition is arithmetic rather than judgment, so it is computed here and never asked.
+ *
+ * The rung is the cheapest model the work can stand, from the same difficulty ladder the fan-out stages use:
+ *
+ *   mechanical             -> haiku
+ *   moderate               -> sonnet
+ *   hard                   -> sonnet     Stage 3: Sonnet 5 beat Opus 5 on pass rate and on cost per solved task
+ *   hard and long-horizon  -> the top rung this session allows
+ *
+ * A rung at or above the session's own model stays here. Anything below it is delegated: read-only work to
+ * kelpie:recon, everything else to kelpie:mech-executor, with the rung as the call's `model`.
+ *
+ * Work with an open decision in it is delegated after the decision, not with it. The decision is made here, and what
+ * is handed over afterwards is fully specified, which is the only kind of work the Sonnet pin on mech-executor is
+ * measured on. skills/orchestration/SKILL.md says the same tier "fails expensively rather than cheaply" on
+ * open-ended work, so the precondition is part of the route rather than advice beside it.
+ *
+ * No effort is named. The Agent tool takes a per-call `model` and has no effort parameter, so an effort in a
+ * prompt-level route would be something the model cannot pass, and the role's own frontmatter effort applies either
+ * way. The fan-out stages keep theirs, because a workflow's agent() call does take one.
+ *
+ * An unknown session model hands the comparison to the model rather than dropping it. On the first prompt of a
+ * session the transcript holds no assistant turn yet, and no hook payload carries the model: SessionStart and
+ * UserPromptSubmit were both checked under `claude -p` on 2.1.278 and neither had it. The first prompt is often the
+ * only one, and on run 02 the model was unknown on every consult, so every route inherited the session's model and
+ * no route could be cheaper. So the route is named with `onlyAbove`, and the note tells the model to take it only
+ * if it runs on something above that rung. The model knows what it runs on.
+ *
+ * The confidence floor, per answer. An unsure answer that decides whether there is a route means no route, and the
+ * mode's own note stands. An unsure difficulty is read one level harder rather than dropped, and the review it alone
+ * decided is dropped. Harder is the direction in which a wrong guess costs money rather than a failed job. It is a
+ * level and not a model rung because the ladder maps two levels to Sonnet: moderate and hard-but-short. On run 02
+ * every difficulty answer came back between 1.66 and 1.70 at confidence 0.50 to 0.55, against the floor of 0.6. A
+ * model rung up would have sent all ten back to Opus over a doubt that could not change the answer from Sonnet.
+ *
+ * The review gate runs on every route, this session's own work included: a hard, long job checked only by whoever
+ * did it is the self-certification blind spot SKILL.md names, whether or not anything was spawned.
  */
-export const applyPromptFloor = (decision, answers, floor) => {
-  if (decision.delegate === null) return decision
-  const decisive = lowestConfidence(answers, PROMPT_DECISIVE)
+export const decidePrompt = (answers, { session = null, floor = null } = {}) => {
+  const substantial = answers.substantial?.noul
+  const readOnly = answers.read_only?.noul
+  const specified = answers.fully_specified?.noul
+  const difficulty = answers.difficulty?.score
+  const longHorizon = answers.long_horizon?.noul
+  for (const [id, value] of [['substantial.noul', substantial], ['read_only.noul', readOnly], ['fully_specified.noul', specified], ['difficulty.score', difficulty], ['long_horizon.noul', longHorizon]]) {
+    if (typeof value !== 'number' || Number.isNaN(value)) {
+      throw new PolicyError(`${STAGES.PROMPT}: answers must carry a numeric ${id}`)
+    }
+  }
+  const decisive = floor === null ? null : lowestConfidence(answers, PROMPT_DECISIVE)
   if (decisive !== null && decisive < floor) {
     return { ...staticDecision(STAGES.PROMPT), source: 'fallback', reason: `confidence ${decisive} below floor ${floor} on an answer that decided the route` }
   }
-  const tiering = lowestConfidence(answers, PROMPT_TIERING)
-  if (tiering !== null && tiering < floor) {
-    return {
-      ...decision,
-      model: null,
-      effort: null,
-      review: null,
-      tiering_declined: `confidence ${tiering} below floor ${floor}`,
-      reason: `${decision.reason}; the difficulty answer was not confident enough to act on, so no tier or review is named`,
-    }
+  const tiering = floor === null ? null : lowestConfidence(answers, PROMPT_TIERING)
+  const unsure = tiering !== null && tiering < floor
+  const ceiling = modelCeiling(session)
+  const review = unsure ? null : decideReview(difficulty, longHorizon, { model: ceiling })
+  const base = { substantial, review: review === null ? null : { ...review, effort: null }, source: 'jev' }
+  const stay = (reason) => ({ ...base, delegate: false, agentType: ROLE_SESSION, model: null, effort: null, reason })
+  if (substantial < NOUL_MIDPOINT) return stay(`the work is smaller than handing it over (substantial ${substantial})`)
+
+  const rung = promptRung(unsure ? Math.min(difficulty + 1, SCORE_TOP) : difficulty, longHorizon)
+  const model = rung === 2 ? (ceiling ?? MODEL_LADDER[MODEL_LADDER.length - 1]) : MODEL_LADDER[rung]
+  const why = unsure
+    ? `${rungReason(difficulty, longHorizon)}, read one level harder because difficulty came back at confidence ${tiering}, under the floor of ${floor}`
+    : rungReason(difficulty, longHorizon)
+  const sessionRank = MODEL_TIERS.indexOf(session)
+  if (sessionRank !== -1 && MODEL_TIERS.indexOf(model) >= sessionRank) {
+    return stay(`the cheapest model that fits is ${model}, for work that is ${why}; this session already runs on ${session}, so a subagent adds the hand-off and saves nothing`)
   }
-  return decision
+  const recon = readOnly >= NOUL_MIDPOINT
+  return {
+    ...base,
+    delegate: true,
+    agentType: recon ? ROLE_RECON : ROLE_MECH,
+    model,
+    effort: null,
+    ...(!recon && specified < NOUL_MIDPOINT ? { precondition: `Resolve every open decision here first (fully_specified ${specified})` } : {}),
+    ...(sessionRank === -1 ? { onlyAbove: model } : {}),
+    reason: why,
+  }
 }
 
 /**

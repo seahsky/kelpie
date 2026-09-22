@@ -1,6 +1,6 @@
 // Runs hooks/delegation-triage/triage.mjs the way Claude Code runs it: as a subprocess fed one UserPromptSubmit
-// event on stdin. What matters here is that an unconfigured install emits nothing, and that no input shape can make
-// the hook fail a turn.
+// event on stdin. What matters here is what an unconfigured install says, which is prefer mode's note and nothing
+// sent anywhere without a key, and that no input shape can make the hook fail a turn.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
@@ -18,8 +18,12 @@ const CLEARED = {
   KELPIE_TRIAGE_THRESHOLD: '',
   KELPIE_TRIAGE_CONSULT: 'off',
   CLAUDE_PLUGIN_OPTION_JEV_API_KEY: '',
+  CLAUDE_PLUGIN_OPTION_JEV_SEND_PROMPTS: '',
   KELPIE_LOG: '',
   KELPIE_LOG_PROMPTS: '',
+  // The user-scope config lives here, and a machine that has run the skill has one. With no project file the hook
+  // falls through to it, so without this a test of the default would be a test of whoever ran it.
+  CLAUDE_CONFIG_DIR: join(tmpdir(), 'kelpie-tests-no-user-config'),
 }
 
 const runHook = (event, env = {}, stdin = null) => new Promise((resolve, reject) => {
@@ -48,8 +52,14 @@ const event = (cwd, prompt) => ({
 
 const BROAD = 'move every handler in src/api onto the new client'
 
-test('an install that has not been turned on emits nothing, whatever the prompt looks like', async () => {
+test('an install nobody configured runs prefer mode, and with no key it stays silent on a prompt with no shape', async () => {
   const cwd = await project(null)
+  assert.match(JSON.parse(await runHook(event(cwd, BROAD))).hookSpecificOutput.additionalContext, /prefer mode/)
+  assert.equal(await runHook(event(cwd, 'fix the off-by-one in src/paginate.ts')), '', 'zero signals is still zero at the prefer bar')
+})
+
+test('a project that wrote off emits nothing, whatever the prompt looks like', async () => {
+  const cwd = await project('off')
   assert.equal(await runHook(event(cwd, BROAD)), '')
 })
 
@@ -113,7 +123,7 @@ test('a lowered bar does not make the hook read prompts it has no business readi
 })
 
 test('the threshold cannot turn a triage on that is off', async () => {
-  const cwd = await project(null)
+  const cwd = await project('off')
   assert.equal(await runHook(event(cwd, BROAD), { KELPIE_TRIAGE_THRESHOLD: '0' }), '')
 })
 
@@ -151,14 +161,23 @@ test('a prompt that got the note is logged with what fired and how long the note
 })
 
 test('the triage being off is logged too, because off is a configuration state and not an absence of one', async () => {
-  const cwd = await project(null)
+  const cwd = await project('off')
   const log = join(cwd, 'kelpie.jsonl')
   assert.equal(await runHook(event(cwd, BROAD), { KELPIE_LOG: log }), '')
   const [entry] = await decisions(log)
   assert.equal(entry.mode, 'off')
-  assert.equal(entry.mode_source, 'default')
+  assert.equal(entry.mode_source, join(cwd, '.claude', 'kelpie-triage.json'))
   assert.equal(entry.emitted, false)
   assert.match(entry.reason, /triage is off/)
+})
+
+test('the default is logged as the default, so a log can tell a choice from an install', async () => {
+  const cwd = await project(null)
+  const log = join(cwd, 'kelpie.jsonl')
+  await runHook(event(cwd, BROAD), { KELPIE_LOG: log })
+  const [entry] = await decisions(log)
+  assert.equal(entry.mode, 'prefer')
+  assert.equal(entry.mode_source, 'default')
 })
 
 test('the log carries the prompt\'s shape, never the prompt, unless it is asked for by name', async () => {
