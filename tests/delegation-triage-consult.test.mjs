@@ -174,6 +174,14 @@ test('read-only work goes to kelpie:recon on haiku, not to Explore on the sessio
   assert.doesNotMatch(note, /Spec it in one shot/, 'recon takes a question, not an acceptance criterion')
 })
 
+test('a read-only question that needs reasoning goes to kelpie:analyst on sonnet, asked one exact question', async () => {
+  const { note } = await routeNote({ readOnly: 0.9, difficulty: 1.1 }, { prompt: 'check whether the retry path can double-charge' })
+  assert.match(note, /Send the question to kelpie:analyst with model: sonnet: moderate \(difficulty 1\.1\)/)
+  assert.match(note, /Ask one exact question/)
+  assert.doesNotMatch(note, /Spec it in one shot/, 'the analyst takes a question, not an acceptance criterion')
+  assert.doesNotMatch(note, /kelpie:recon/)
+})
+
 test('an open decision is resolved here, and the rest goes to a cheaper model', async () => {
   const { note } = await routeNote({ specified: 0.2, difficulty: 1.1 }, { prompt: 'make the uploader nicer' })
   assert.match(note, /Resolve every open decision here first \(fully_specified 0\.2\)\. Then hand over what is left\./)
@@ -206,6 +214,58 @@ test('the first prompt of a session gets the route, and the price comparison goe
   assert.match(note, /costs less than doing this here if this session runs on a model above sonnet/)
   assert.match(note, /If this session runs on sonnet or a cheaper model, do the work here instead/)
   assert.match(note, /kelpie:mech-executor with model: sonnet/)
+})
+
+test('with the model unknown, the first line is the condition, not an unconditional "delegate this."', async () => {
+  // On 2026-09-23 an Opus session's first prompt got "delegate this." above a bullet saying an Opus session should
+  // keep the work, and it spawned three agents on Opus. The line a model acts on is the first one.
+  const { note } = await routeNote({ difficulty: 1.92, longHorizon: 0.73, readOnly: 0.9 }, { model: null })
+  const [header] = note.split('\n')
+  assert.match(header, /decided with jev: delegate this only if this session runs on a model above opus\.$/)
+})
+
+/** A SessionStart record in a plugin data directory, the way hooks/session-model/record.mjs leaves it. */
+const recorded = async (model, sessionId = 'test-session') => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'kelpie-plugin-data-'))
+  await mkdir(join(dataDir, 'sessions'), { recursive: true })
+  await writeFile(join(dataDir, 'sessions', `${sessionId}.json`), JSON.stringify({ model, source: 'startup' }))
+  return { CLAUDE_PLUGIN_DATA: dataDir }
+}
+
+test('the first prompt of an Opus session keeps hard, long work here once SessionStart recorded the model', async () => {
+  // The answers the 2026-09-23 session got. With the model known there is no route to take at Opus's own price.
+  const env = await recorded('claude-opus-5-5[1m]')
+  const { note } = await routeNote({ difficulty: 1.92, longHorizon: 0.73, readOnly: 0.9 }, { model: null, env })
+  assert.match(note, /decided with jev: keep this in this session\./)
+  assert.match(note, /this session already runs on opus/)
+  assert.doesNotMatch(note, /if this session runs on/i)
+})
+
+test('the first prompt of an Opus session still hands cheaper work down, with no condition left for the model', async () => {
+  const env = await recorded('claude-opus-5-5')
+  const { note } = await routeNote({ difficulty: 1.1 }, { model: null, env })
+  assert.match(note, /decided with jev: delegate this\.$/m)
+  assert.match(note, /kelpie:mech-executor with model: sonnet/)
+  assert.doesNotMatch(note, /if this session runs on/i)
+})
+
+test('the transcript beats the SessionStart record, because only the transcript sees a /model switch', async () => {
+  const env = await recorded('claude-opus-5')
+  const { note } = await routeNote({ difficulty: 1.1 }, { model: 'claude-sonnet-5', env })
+  assert.match(note, /keep this in this session/, 'the session switched to sonnet, so sonnet work stays')
+})
+
+test('the log says which source named the session model', async () => {
+  const cwd = await project('prefer')
+  const log = join(cwd, 'kelpie.jsonl')
+  const env = await recorded('claude-opus-5')
+  await withStub(answering({ difficulty: 1.1 }), async ({ url }) => {
+    await runHook(event(cwd, MEASURED), { CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'test-key', KELPIE_GATE_JEV_URL: url, KELPIE_LOG: log, ...env })
+    const decision = lineFor(await lines(log), 'decision')
+    assert.equal(decision.session_model, 'opus')
+    assert.equal(decision.session_model_source, 'session_start')
+    assert.equal(decision.route.only_above, null)
+  })
 })
 
 test('a dead endpoint leaves prefer mode saying exactly what it said before the consult existed', async () => {

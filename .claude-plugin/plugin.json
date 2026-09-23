@@ -1,8 +1,8 @@
 {
   "name": "kelpie",
   "displayName": "Kelpie",
-  "version": "0.2.2",
-  "description": "Delegation policy for Claude Code, cut down to what its own benchmark supports: three pinned roles, a skill that argues against delegating at your own model's price, and a hook that checks every prompt for work a cheaper model can do for less.",
+  "version": "0.2.3",
+  "description": "Delegation policy for Claude Code, cut down to what its own benchmark supports: four pinned roles, a skill that argues against delegating at your own model's price, and a hook that checks every prompt for work a cheaper model can do for less.",
   "author": {
     "name": "seahsky"
   },

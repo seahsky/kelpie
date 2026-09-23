@@ -10,8 +10,17 @@
 // PreToolUse hook can see. So the model is read from the transcript the payload points at, where every assistant
 // entry records `message.model`. Guessing it instead is not an option: the gate promises never to route a spawn above
 // the session's own model, and a wrong guess upward breaks that promise silently.
+//
+// The transcript cannot answer on the first prompt, because it has no assistant turn yet. Measured on 2.1.280,
+// interactive and under `claude -p`: on a fresh session the file does not even exist when UserPromptSubmit runs.
+// The first prompt is often the only one, so the SessionStart hook in hooks/session-model records the model an
+// interactive startup or compact payload carries, and resolveSession falls back to that record. The transcript still
+// wins once it has an assistant turn, because it reflects a /model switch and the record does not. `claude -p`, a
+// resume, and a /clear send no model on SessionStart, so no record backs them; see recordFor. A prompt there
+// resolves to null only while the transcript has no main-thread assistant turn, which a resume usually has.
 
-import { closeSync, openSync, readSync, statSync } from 'node:fs'
+import { closeSync, openSync, readFileSync, readSync, statSync } from 'node:fs'
+import { join } from 'node:path'
 
 /** Cheapest first. Unlike MODEL_LADDER this includes fable, because a session can run on it even though the gate cannot route to it. */
 export const MODEL_TIERS = ['haiku', 'sonnet', 'opus', 'fable']
@@ -68,13 +77,75 @@ export const readTail = (path, maxBytes = TRANSCRIPT_TAIL_BYTES) => {
   }
 }
 
+/** A session id is a file name below, so anything that could step out of the directory names no file. */
+const SESSION_ID = /^[A-Za-z0-9_-]{1,128}$/
+
+/**
+ * Where the SessionStart record for one session lives, or null where it cannot live.
+ *
+ * `dataDir` is CLAUDE_PLUGIN_DATA, the directory Claude Code keeps for a plugin across updates. It is unset outside a
+ * plugin hook, such as under the test runner, and then there is no record to read or write.
+ */
+export const recordedModelPath = ({ dataDir, sessionId }) =>
+  typeof dataDir === 'string' && dataDir !== '' && typeof sessionId === 'string' && SESSION_ID.test(sessionId)
+    ? join(dataDir, 'sessions', `${sessionId}.json`)
+    : null
+
+/**
+ * How long a record outlives its session. Only housekeeping: the age of a record never makes it wrong, and the
+ * record is read only before a session's first reply. See recordFor for what does make one wrong.
+ */
+export const RECORD_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000
+
+/**
+ * What one SessionStart event does to the record: write it, forget it, or nothing, with the reason.
+ *
+ * Measured on 2.1.280, interactive: `startup` and `compact` payloads name the model, and `clear` and `resume` send
+ * `model: null`. A resume keeps the session id and can change the model (`--resume <id> --model sonnet`), so a record
+ * from before it may name a model the session no longer runs. Such an event forgets the record, and the triage treats
+ * the model as unknown until the transcript names it. `clear` starts a new session id whose payload names no
+ * previous one, so that session has no record to read.
+ */
+export const recordFor = ({ event, dataDir, now }) => {
+  const nothing = (reason) => ({ record: null, forget: null, reason })
+  if (event.hook_event_name !== 'SessionStart') return nothing('not a SessionStart event')
+  const path = recordedModelPath({ dataDir, sessionId: event.session_id })
+  if (path === null) return nothing('no plugin data directory or no usable session id')
+  if (tierOf(event.model) === null) {
+    return { record: null, forget: path, reason: `payload model ${JSON.stringify(event.model ?? null)} names no tier, so any earlier record may be stale` }
+  }
+  return { record: { path, body: { model: event.model, source: event.source ?? null, recorded_at: new Date(now).toISOString() } }, forget: null, reason: 'recorded' }
+}
+
+/**
+ * The tier the SessionStart hook recorded, or null where it recorded none.
+ *
+ * A missing file is the normal case for a headless session, so it is null. Any other failure is raised: the record is
+ * written by rename, so a file that will not read or parse is a fault worth the caller's log, not a quiet unknown.
+ */
+export const readRecordedModel = (path, readImpl = readFileSync) => {
+  let text = null
+  try {
+    text = readImpl(path, 'utf8')
+  } catch (error) {
+    if (error && error.code === 'ENOENT') return null
+    throw error
+  }
+  return tierOf(JSON.parse(text).model)
+}
+
 /**
  * The session's model tier and effort, or null for either one that cannot be established.
+ *
+ * `modelSource` says which of the two sources answered, so a log can tell a first-prompt answer from a later one.
  *
  * A null model is not a detail: the caller falls back to the shipped pins on it, because with no known ceiling the
  * gate cannot show that a route is downward.
  */
-export const resolveSession = ({ transcriptPath, effortLevel, env = {}, readTailImpl = readTail }) => ({
-  model: transcriptPath ? sessionModelFromTranscript(readTailImpl(transcriptPath)) : null,
-  effort: effortLevel ?? env.CLAUDE_EFFORT ?? null,
-})
+export const resolveSession = ({ transcriptPath, effortLevel, recordedPath = null, env = {}, readTailImpl = readTail, readRecordedImpl = readRecordedModel }) => {
+  const effort = effortLevel ?? env.CLAUDE_EFFORT ?? null
+  const fromTranscript = transcriptPath ? sessionModelFromTranscript(readTailImpl(transcriptPath)) : null
+  if (fromTranscript !== null) return { model: fromTranscript, modelSource: 'transcript', effort }
+  const fromRecord = recordedPath ? readRecordedImpl(recordedPath) : null
+  return { model: fromRecord, modelSource: fromRecord === null ? null : 'session_start', effort }
+}

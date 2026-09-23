@@ -29,7 +29,7 @@ import { resolveConsult, resolveMode, resolveThreshold } from './config.mjs'
 import { fingerprint, logger, resolveLogPath, resolveVerbosity } from '../log.mjs'
 import { renderNote, thresholdFor, triage } from './signals.mjs'
 import { consult, renderRoute } from './consult.mjs'
-import { resolveSession } from '../jev-gate/session.mjs'
+import { recordedModelPath, resolveSession } from '../jev-gate/session.mjs'
 import { flag, str } from '../env.mjs'
 
 const readStdin = async () => {
@@ -86,8 +86,13 @@ const main = async () => {
     allowed: flag(env.CLAUDE_PLUGIN_OPTION_JEV_SEND_PROMPTS),
   })
   const session = consulting.on && !verdict.quiet
-    ? resolveSession({ transcriptPath: event.transcript_path, effortLevel: event.effort?.level, env })
-    : { model: null, effort: null }
+    ? resolveSession({
+      transcriptPath: event.transcript_path,
+      effortLevel: event.effort?.level,
+      recordedPath: recordedModelPath({ dataDir: env.CLAUDE_PLUGIN_DATA, sessionId: event.session_id }),
+      env,
+    })
+    : { model: null, modelSource: null, effort: null }
   const route = consulting.on && !verdict.quiet
     ? await consult({ prompt: event.prompt, sessionModel: session.model, env, record: log, verbosity })
     : null
@@ -108,6 +113,7 @@ const main = async () => {
     consulted: consulting.on,
     consult_reason: consulting.reason,
     session_model: session.model,
+    session_model_source: session.modelSource,
     decided_by: route === null ? 'signals' : 'jev',
     route: route === null ? null : { delegate: route.delegate, agentType: route.agentType, model: route.model, only_above: route.onlyAbove ?? null, review: route.review },
     emitted: note !== null,

@@ -34,6 +34,17 @@ export const ROLE_SESSION = null
 export const ROLE_RECON = 'kelpie:recon'
 
 /**
+ * The read-only route for a question a lookup cannot answer.
+ *
+ * recon's brief tells it to stop at a judgment call, so read-only work that needs reasoning sent there came back
+ * unanswered or went to general-purpose on the session's model. `kelpie:analyst` is pinned to Sonnet at medium
+ * effort and answers one question with `path:line` evidence. Medium rather than low because the Sonnet 5 effort docs
+ * warn of under-thinking at low on moderately complex tasks, which is this route's work by definition. Nothing
+ * measured supports the pin yet; it is a declared choice, like recon's Haiku pin.
+ */
+export const ROLE_ANALYST = 'kelpie:analyst'
+
+/**
  * The stages the gate can reach.
  *
  * The three workflow stages are reachable only if the Workflow tool call's args already name their work. `prompt` is
@@ -317,24 +328,28 @@ const rungReason = (difficulty, longHorizon) => {
  *   hard                   -> sonnet     Stage 3: Sonnet 5 beat Opus 5 on pass rate and on cost per solved task
  *   hard and long-horizon  -> the top rung this session allows
  *
- * A rung at or above the session's own model stays here. Anything below it is delegated: read-only work to
- * kelpie:recon, everything else to kelpie:mech-executor, with the rung as the call's `model`.
+ * A rung at or above the session's own model stays here. Anything below it is delegated, with the rung as the call's
+ * `model`: a read-only lookup (mechanical) to kelpie:recon, a read-only question that needs reasoning to
+ * kelpie:analyst, and everything else to kelpie:mech-executor.
  *
  * Work with an open decision in it is delegated after the decision, not with it. The decision is made here, and what
  * is handed over afterwards is fully specified, which is the only kind of work the Sonnet pin on mech-executor is
  * measured on. skills/orchestration/SKILL.md says the same tier "fails expensively rather than cheaply" on
- * open-ended work, so the precondition is part of the route rather than advice beside it.
+ * open-ended work, so the precondition is part of the route rather than advice beside it. The analyst gets the same
+ * precondition in its own words: a vague question comes back as a survey, and a survey is the finder failure. A recon
+ * lookup gets none, because a lookup has no decision in it.
  *
  * No effort is named. The Agent tool takes a per-call `model` and has no effort parameter, so an effort in a
  * prompt-level route would be something the model cannot pass, and the role's own frontmatter effort applies either
  * way. The fan-out stages keep theirs, because a workflow's agent() call does take one.
  *
  * An unknown session model hands the comparison to the model rather than dropping it. On the first prompt of a
- * session the transcript holds no assistant turn yet, and no hook payload carries the model: SessionStart and
- * UserPromptSubmit were both checked under `claude -p` on 2.1.278 and neither had it. The first prompt is often the
- * only one, and on run 02 the model was unknown on every consult, so every route inherited the session's model and
- * no route could be cheaper. So the route is named with `onlyAbove`, and the note tells the model to take it only
- * if it runs on something above that rung. The model knows what it runs on.
+ * session the transcript holds no assistant turn yet. An interactive startup or compact payload carries the model
+ * and hooks/session-model records it, but a resume, a /clear, and every `claude -p` SessionStart send none, and no
+ * UserPromptSubmit payload has it (checked on 2.1.278 and 2.1.280). The first prompt is often the only one, and on run 02 the model was unknown on every consult,
+ * so every route inherited the session's model and no route could be cheaper. So the route is named with
+ * `onlyAbove`, and the note makes its first line conditional on the model running above that rung. The model knows
+ * what it runs on.
  *
  * The confidence floor, per answer. An unsure answer that decides whether there is a route means no route, and the
  * mode's own note stands. An unsure difficulty is read one level harder rather than dropped, and the review it alone
@@ -378,14 +393,20 @@ export const decidePrompt = (answers, { session = null, floor = null } = {}) => 
   if (sessionRank !== -1 && MODEL_TIERS.indexOf(model) >= sessionRank) {
     return stay(`the cheapest model that fits is ${model}, for work that is ${why}; this session already runs on ${session}, so a subagent adds the hand-off and saves nothing`)
   }
-  const recon = readOnly >= NOUL_MIDPOINT
+  const agentType = readOnly < NOUL_MIDPOINT ? ROLE_MECH : rung === 0 ? ROLE_RECON : ROLE_ANALYST
+  const open = specified < NOUL_MIDPOINT
+  const precondition = !open || agentType === ROLE_RECON
+    ? null
+    : agentType === ROLE_ANALYST
+      ? `Pin down the exact question here first (fully_specified ${specified})`
+      : `Resolve every open decision here first (fully_specified ${specified})`
   return {
     ...base,
     delegate: true,
-    agentType: recon ? ROLE_RECON : ROLE_MECH,
+    agentType,
     model,
     effort: null,
-    ...(!recon && specified < NOUL_MIDPOINT ? { precondition: `Resolve every open decision here first (fully_specified ${specified})` } : {}),
+    ...(precondition === null ? {} : { precondition }),
     ...(sessionRank === -1 ? { onlyAbove: model } : {}),
     reason: why,
   }

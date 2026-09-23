@@ -3,7 +3,7 @@ name: orchestration
 description: Delegation policy for kelpie — when delegating actually pays, which role and model fit, and when to run a check instead of a verifier. Consult before spawning a subagent or writing a workflow script in a project where kelpie is installed.
 ---
 
-kelpie ships three roles as plugin agents (invoke as `kelpie:<role>`): `recon`, `mech-executor` and `verifier`.
+kelpie ships four roles as plugin agents (invoke as `kelpie:<role>`): `recon`, `analyst`, `mech-executor` and `verifier`.
 It once shipped five.
 Three were removed after kelpie's own benchmark measured them, and one of those, a Haiku finder, came back as `recon` with a narrower job.
 The measurements are in this file because they change what you should do, not as trivia.
@@ -27,6 +27,7 @@ A spawn that runs a 9-turn internal loop to answer one question costs more than 
 **Delegate when a cheaper model can do the work, when the work does not fit one context, or when independence is the point:**
 
 - Lookups that take more than a search or two: `kelpie:recon`, on Haiku.
+- Read-only questions a lookup cannot answer, such as tracing a flow or checking a claim against the code: `kelpie:analyst`, on Sonnet.
 - Fully-specified work, once every decision in it is made: `kelpie:mech-executor`, on Sonnet.
 - More files than one context holds, each needing the same treatment.
 - A check that must not be done by whoever wrote the thing.
@@ -38,11 +39,13 @@ A spawn that runs a 9-turn internal loop to answer one question costs more than 
 | Role | Model | Effort | For |
 |---|---|---|---|
 | `kelpie:recon` | haiku | — | Read-only lookups: where something is defined or used, which files match, what the code says. Facts with `path:line`, never findings |
+| `kelpie:analyst` | sonnet | medium | Read-only questions that need reasoning: trace a flow, explain behaviour, check a claim against the code. One question, `path:line` evidence, inferences marked |
 | `kelpie:mech-executor` | sonnet | low | Fully-specified mechanical work: pattern refactors, convention-following tests, docs, bulk edits — no open decisions left |
 | `kelpie:verifier` | inherit | medium | Adversarial check of a claim **no executable check can settle** |
 
 **There is no judgment-executor role.**
 Work with open design decisions in it stays on the main thread.
+`kelpie:analyst` reasons about code but decides nothing: where an answer turns on a design choice or an acceptable risk, it lays out what the code shows and stops.
 Nothing measured supports handing judgment to a cheaper model, and a pinned-up executor under a cheaper session just inverts the hierarchy.
 
 **Sonnet on `mech-executor` is measured, and scoped.**
@@ -57,6 +60,8 @@ Its brief is narrow on purpose.
 kelpie used to ship a Haiku `scout` that was asked to find problems, and it manufactured 84 leads that a plain Opus prompt never generated, which the verifier then spent real money rejecting.
 So `recon` reports what the code says, with `path:line`, and never what is wrong with it.
 Do not send it to find bugs, audit, or review; that is judgment, and judgment stays with you.
+A question that needs reasoning but no decision, such as whether a documented claim matches the code, goes to `kelpie:analyst` instead: one exact question, answered with evidence.
+The analyst is not a bug hunter either. Its pin is not measured.
 For a lookup one `Grep` answers, run the `Grep`.
 
 **Security work gets no special role.**
@@ -112,5 +117,5 @@ It runs in `prefer` mode unless `/kelpie:delegation-triage` sets another mode, p
 
 Which mode it is in changes what you get:
 
-- `prefer`, the default, routes work to a subagent on a cheaper model when the work is big enough to outrun the hand-off, and says "do it here" when the cheapest model that fits is your own. With a Jev key and "Send prompts to Jev" on, it asks about every prompt it may read and names one route and one model. On the first prompt of a session it cannot read your model, so the route says which model you have to be above to take it; you know what you run on. Open design decisions and security-sensitive work stay on the main thread whatever the note says, because neither is a cost question.
+- `prefer`, the default, routes work to a subagent on a cheaper model when the work is big enough to outrun the hand-off, and says "do it here" when the cheapest model that fits is your own. With a Jev key and "Send prompts to Jev" on, it asks about every prompt it may read and names one route and one model. On the first prompt of a headless `claude -p` session it cannot read your model, so the route says which model you have to be above to take it; you know what you run on. Open design decisions and security-sensitive work stay on the main thread whatever the note says, because neither is a cost question.
 - `signals` injects a compressed form of the policy above on delegation-shaped prompts, and `always` does it on every prompt. Both lead with the main thread, so they are this file.
