@@ -16,7 +16,8 @@
 // The first prompt is often the only one, so the SessionStart hook in hooks/session-model records the model an
 // interactive startup or compact payload carries, and resolveSession falls back to that record. The transcript still
 // wins once it has an assistant turn, because it reflects a /model switch and the record does not. `claude -p`, a
-// resume, and a /clear send no model on SessionStart, so their first prompt still resolves to null; see recordFor.
+// resume, and a /clear send no model on SessionStart, so no record backs them; see recordFor. A prompt there
+// resolves to null only while the transcript has no main-thread assistant turn, which a resume usually has.
 
 import { closeSync, openSync, readFileSync, readSync, statSync } from 'node:fs'
 import { join } from 'node:path'
