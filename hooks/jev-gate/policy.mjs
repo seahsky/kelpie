@@ -344,9 +344,9 @@ const rungReason = (difficulty, longHorizon) => {
  * way. The fan-out stages keep theirs, because a workflow's agent() call does take one.
  *
  * An unknown session model hands the comparison to the model rather than dropping it. On the first prompt of a
- * session the transcript holds no assistant turn yet. An interactive SessionStart payload carries the model and
- * hooks/session-model records it, but under `claude -p` neither SessionStart nor UserPromptSubmit has it (checked on
- * 2.1.278 and 2.1.280). The first prompt is often the only one, and on run 02 the model was unknown on every consult,
+ * session the transcript holds no assistant turn yet. An interactive startup or compact payload carries the model
+ * and hooks/session-model records it, but a resume, a /clear, and every `claude -p` SessionStart send none, and no
+ * UserPromptSubmit payload has it (checked on 2.1.278 and 2.1.280). The first prompt is often the only one, and on run 02 the model was unknown on every consult,
  * so every route inherited the session's model and no route could be cheaper. So the route is named with
  * `onlyAbove`, and the note makes its first line conditional on the model running above that rung. The model knows
  * what it runs on.

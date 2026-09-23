@@ -48,7 +48,7 @@ Cheaper: the note names the agent and the `model` to pass, and nothing else.
 It names no effort, because the Agent tool takes a model and has no effort parameter.
 
 On the first prompt of a session the transcript has no assistant turn yet, so the hook reads the session's model from a record kelpie's SessionStart hook writes under `CLAUDE_PLUGIN_DATA`.
-An interactive session's SessionStart payload names the model; a `claude -p` session's does not.
+An interactive session names its model when it starts and when it compacts; a resume, a `/clear`, and a `claude -p` session do not, so kelpie keeps no record for them.
 There, and only there, the note's first line says which model the session has to be above to take the route, and the model decides, since it knows what it runs on.
 
 **Say these three things before a user turns on "Send prompts to Jev".**

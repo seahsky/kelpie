@@ -13,10 +13,10 @@
 //
 // The transcript cannot answer on the first prompt, because it has no assistant turn yet. Measured on 2.1.280,
 // interactive and under `claude -p`: on a fresh session the file does not even exist when UserPromptSubmit runs.
-// The first prompt is often the only one, so the SessionStart hook in hooks/session-model records the model the
-// interactive SessionStart payload does carry, and resolveSession falls back to that record. The transcript still
-// wins once it has an assistant turn, because it reflects a /model switch and the record does not. `claude -p` sends
-// no model on SessionStart either, so a headless first prompt still resolves to null.
+// The first prompt is often the only one, so the SessionStart hook in hooks/session-model records the model an
+// interactive startup or compact payload carries, and resolveSession falls back to that record. The transcript still
+// wins once it has an assistant turn, because it reflects a /model switch and the record does not. `claude -p`, a
+// resume, and a /clear send no model on SessionStart, so their first prompt still resolves to null; see recordFor.
 
 import { closeSync, openSync, readFileSync, readSync, statSync } from 'node:fs'
 import { join } from 'node:path'
@@ -90,20 +90,30 @@ export const recordedModelPath = ({ dataDir, sessionId }) =>
     ? join(dataDir, 'sessions', `${sessionId}.json`)
     : null
 
-/** A record older than this belongs to a session that ended, since a resumed session fires SessionStart again. */
+/**
+ * How long a record outlives its session. Only housekeeping: the age of a record never makes it wrong, and the
+ * record is read only before a session's first reply. See recordFor for what does make one wrong.
+ */
 export const RECORD_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000
 
 /**
- * What to write for one SessionStart event, or null with the reason nothing is written.
+ * What one SessionStart event does to the record: write it, forget it, or nothing, with the reason.
  *
- * A model id naming no tier is not recorded, because the reader would only turn it back into null.
+ * Measured on 2.1.280, interactive: `startup` and `compact` payloads name the model, and `clear` and `resume` send
+ * `model: null`. A resume keeps the session id and can change the model (`--resume <id> --model sonnet`), so a record
+ * from before it may name a model the session no longer runs. Such an event forgets the record, and the triage treats
+ * the model as unknown until the transcript names it. `clear` starts a new session id whose payload names no
+ * previous one, so that session has no record to read.
  */
 export const recordFor = ({ event, dataDir, now }) => {
-  if (event.hook_event_name !== 'SessionStart') return { record: null, reason: 'not a SessionStart event' }
+  const nothing = (reason) => ({ record: null, forget: null, reason })
+  if (event.hook_event_name !== 'SessionStart') return nothing('not a SessionStart event')
   const path = recordedModelPath({ dataDir, sessionId: event.session_id })
-  if (path === null) return { record: null, reason: 'no plugin data directory or no usable session id' }
-  if (tierOf(event.model) === null) return { record: null, reason: `payload model ${JSON.stringify(event.model ?? null)} names no tier` }
-  return { record: { path, body: { model: event.model, source: event.source ?? null, recorded_at: new Date(now).toISOString() } }, reason: 'recorded' }
+  if (path === null) return nothing('no plugin data directory or no usable session id')
+  if (tierOf(event.model) === null) {
+    return { record: null, forget: path, reason: `payload model ${JSON.stringify(event.model ?? null)} names no tier, so any earlier record may be stale` }
+  }
+  return { record: { path, body: { model: event.model, source: event.source ?? null, recorded_at: new Date(now).toISOString() } }, forget: null, reason: 'recorded' }
 }
 
 /**

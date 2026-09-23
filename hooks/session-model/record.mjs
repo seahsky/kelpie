@@ -6,7 +6,8 @@
 // 2.1.280). The triage then named a route with a condition on a model it could not check. On 2026-09-23 an Opus
 // session got "delegate this" above "if this session runs on opus ..., do the work here instead", and spawned three
 // general-purpose agents on Opus: the hand-off with no saving behind it. The interactive SessionStart payload does
-// carry `model`, so this hook writes it down where session.mjs reads it back.
+// carry `model` on startup and compact, so this hook writes it down where session.mjs reads it back. A resume or a
+// /clear sends no model, and a resume can change it, so on those this hook removes the session's record instead.
 //
 // It writes nothing to stdout, because a SessionStart hook's stdout is added to the session's context. Every failure
 // exits 0 and is logged where a log is configured, since a missing record only returns the triage to what it did
@@ -31,6 +32,17 @@ const writeRecord = ({ path, body }) => {
   renameSync(temporary, path)
 }
 
+/** Returns whether there was a record to remove. */
+const removeRecord = (path) => {
+  try {
+    unlinkSync(path)
+    return true
+  } catch (error) {
+    if (error && error.code === 'ENOENT') return false
+    throw error
+  }
+}
+
 /** Whether a record is stale. A file another session renamed or removed between the listing and the stat is not. */
 const isStale = (path, now) => {
   try {
@@ -52,7 +64,11 @@ const main = async () => {
   const event = JSON.parse(await readStdin())
   const log = logger({ path: resolveLogPath({ env: process.env, cwd: event.cwd ?? '' }).path, base: { hook: 'session-model', session_id: event.session_id ?? null } })
   const now = Date.now()
-  const { record, reason } = recordFor({ event, dataDir: process.env.CLAUDE_PLUGIN_DATA, now })
+  const { record, forget, reason } = recordFor({ event, dataDir: process.env.CLAUDE_PLUGIN_DATA, now })
+  if (forget !== null) {
+    log({ event: 'forgotten', removed: removeRecord(forget), source: event.source ?? null, reason })
+    return
+  }
   if (record === null) {
     log({ event: 'skipped', reason })
     return

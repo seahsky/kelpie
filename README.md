@@ -97,7 +97,7 @@ hand-off (substantial 0.9), and sonnet is enough for it.
 The route names a model and no effort, because the Agent tool takes a model and has no effort parameter.
 
 On the first prompt of a session the transcript has no assistant turn yet, so kelpie reads your model from a record its SessionStart hook writes to the plugin's data directory.
-An interactive session's SessionStart payload names the model; a `claude -p` session's does not.
+An interactive session names its model when it starts and when it compacts; a resume, a `/clear`, and a `claude -p` session do not, so kelpie keeps no record for them.
 There, and only there, the note's first line says which model your session has to be above to take the route, and the model decides, since it knows what it runs on.
 
 Three things to know before you turn it on.

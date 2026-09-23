@@ -48,6 +48,22 @@ test('a resumed session overwrites its record, so the latest SessionStart wins',
   assert.equal(readRecordedModel(recordedModelPath({ dataDir, sessionId: startup().session_id })), 'sonnet')
 })
 
+test('a resume names no model and can change it, so the session\'s earlier record is removed', async () => {
+  // Measured on 2.1.280: `--resume <id> --model sonnet` keeps the session id and sends `model: null`.
+  const dataDir = await mkdtemp(join(tmpdir(), 'kelpie-plugin-data-'))
+  const path = recordedModelPath({ dataDir, sessionId: startup().session_id })
+  await runHook(startup(), { CLAUDE_PLUGIN_DATA: dataDir })
+  assert.equal(readRecordedModel(path), 'opus')
+  assert.equal(await runHook(startup({ source: 'resume', model: null }), { CLAUDE_PLUGIN_DATA: dataDir }), '')
+  assert.equal(readRecordedModel(path), null, 'the opus record from before the resume is not read')
+})
+
+test('a resume with no record to remove exits cleanly', async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'kelpie-plugin-data-'))
+  assert.equal(await runHook(startup({ source: 'resume', model: null }), { CLAUDE_PLUGIN_DATA: dataDir }), '')
+  assert.deepEqual(await readdir(dataDir), [])
+})
+
 test('a headless SessionStart names no model, and nothing is written for it', async () => {
   const dataDir = await mkdtemp(join(tmpdir(), 'kelpie-plugin-data-'))
   const { model, ...headless } = startup()
@@ -77,7 +93,12 @@ test('recordFor says why it wrote nothing', () => {
   const now = Date.parse('2026-09-23T00:00:00Z')
   assert.match(recordFor({ event: startup({ hook_event_name: 'UserPromptSubmit' }), dataDir: '/d', now }).reason, /not a SessionStart/)
   assert.match(recordFor({ event: startup({ session_id: '../x' }), dataDir: '/d', now }).reason, /no usable session id/)
-  assert.match(recordFor({ event: startup({ model: 'gpt-5' }), dataDir: '/d', now }).reason, /names no tier/)
-  const { record } = recordFor({ event: startup(), dataDir: '/d', now })
+  const unnamed = recordFor({ event: startup({ source: 'clear', model: null }), dataDir: '/d', now })
+  assert.match(unnamed.reason, /names no tier/)
+  assert.equal(unnamed.record, null)
+  assert.equal(unnamed.forget, recordedModelPath({ dataDir: '/d', sessionId: startup().session_id }))
+  assert.equal(recordFor({ event: startup({ session_id: '../x', model: null }), dataDir: '/d', now }).forget, null, 'no usable id, nothing to remove')
+  const { record, forget } = recordFor({ event: startup(), dataDir: '/d', now })
+  assert.equal(forget, null)
   assert.deepEqual(record.body, { model: 'claude-opus-5-5[1m]', source: 'startup', recorded_at: '2026-09-23T00:00:00.000Z' })
 })
