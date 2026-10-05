@@ -38,7 +38,7 @@ One call carries five questions about the work:
 |---|---|
 | `substantial` | Whether the work is big enough to outrun the hand-off. Work that one or two steps finish stays here |
 | `read_only` | Read-only mechanical lookups go to `kelpie:recon`, read-only work that needs reasoning to `kelpie:analyst`, everything else to `kelpie:mech-executor` |
-| `fully_specified` | An open decision is resolved in this session first, and only what is left is handed over |
+| `fully_specified` | Work that changes the code with an open decision in it stays in this session. A read-only question with one goes to `kelpie:analyst` once it is pinned down here |
 | `difficulty` | The cheapest model that fits: mechanical to Haiku, moderate and hard to Sonnet, hard and long to the top model the session allows |
 | `long_horizon` | With `difficulty`, whether the result gets an independent `kelpie:verifier` check |
 
@@ -49,7 +49,8 @@ It names no effort, because the Agent tool takes a model and has no effort param
 
 On the first prompt of a session the transcript has no assistant turn yet, so the hook reads the session's model from a record kelpie's SessionStart hook writes under `CLAUDE_PLUGIN_DATA`.
 An interactive session names its model when it starts and when it compacts; a resume, a `/clear`, and a `claude -p` session do not, so kelpie keeps no record for them.
-There, and only there, the note's first line says which model the session has to be above to take the route, and the model decides, since it knows what it runs on.
+There the hook takes the session to run on Opus, and the decision log says the model was assumed.
+It does not ask the model to compare: a note that opened with a condition on the session's model was followed 0 times in 5 on a replayed ticket.
 
 **Say these three things before a user turns on "Send prompts to Jev".**
 

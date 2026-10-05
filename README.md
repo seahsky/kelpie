@@ -56,13 +56,14 @@ That writes one config file, so there is no `settings.json` entry to add and not
 | `always` | That note on every prompt. Costs context every turn |
 | `off` | Nothing. It has to be written, since no config file means `prefer` |
 
-It never rewrites your prompt: it adds a paragraph of context and nothing else, 400 to 1,200 characters depending on the note.
+It never rewrites your prompt: it adds a paragraph of context and nothing else, from about 150 characters for a Jev route to about 1,400 for `prefer` mode's own note without a key.
 A hook that fails, times out, or reads a payload it does not understand emits nothing, which leaves the prompt as you typed it.
 A Jev call that fails does not silence the turn: the mode falls back to the note it would have shown with no key.
 
 Two costs.
 The hook starts a node process on every prompt.
-And nothing measured supports it yet: whether routing work to a cheaper model saves money in practice has not been run.
+And nothing measured supports it yet: the one route measured on real tickets cost more than doing the work in the session, and kelpie no longer takes it (see [below](#with-jev-prefer-mode-asks-instead-of-guessing-from-keywords)).
+Whether routing fully specified work to a cheaper model saves money in practice has not been run.
 
 ### Why only cheaper models
 
@@ -82,23 +83,27 @@ Give the plugin a Jev API key and turn on "Send prompts to Jev", and it sends th
 kelpie then picks the cheapest model the work can stand and compares it with your session's model.
 
 ```
-kelpie delegation triage (prefer mode), decided with jev: delegate this.
-
-A subagent on sonnet costs less than doing this here: the work is big enough to outrun the
-hand-off (substantial 0.9), and sonnet is enough for it.
-- Resolve every open decision here first (fully_specified 0.2). Then hand over what is left.
-- Spawn kelpie:mech-executor with model: sonnet: moderate (difficulty 1.1).
-- Spec it in one shot: exact file paths, exact symbol names, acceptance criteria, and why the
-  work matters. A subagent cannot ask you a question mid-task.
-- Security-sensitive work stays in this session whatever this says. Opus has been observed
-  refusing delegated security tasks that it accepts inline.
+Hand the implementation to kelpie:mech-executor with model: sonnet, giving it a complete spec,
+and review what it returns before you finish.
+(kelpie delegation triage, prefer mode, route decided with jev)
 ```
 
+The note is the plan and nothing else.
+The answers and the reasoning behind the route go to the decision log, not the note.
+Replaying one real ticket on Opus 5.5, a note that argued its case with scores was followed 0 times in 9, and a note that opened with a condition on the session's model 0 times in 5; a note that was only the plan led to the spawn 6 times in 7, and the seventh session was writing the spec for the hand-off when the replay stopped.
 The route names a model and no effort, because the Agent tool takes a model and has no effort parameter.
 
+Work that changes the code while a design decision is still open stays in your session, whatever the other answers say.
+kelpie used to route it as "settle the design yourself, then hand the implementation over".
+On ten tickets from a private repository, on Opus 5.5 at medium effort, sessions took that route 9 times in 9, and the arm cost a median 20.7% more than the same sessions with no plugin, cheaper on 3 tickets of 10.
+Settling the design meant reading the code in your session anyway, and the Sonnet executor then read it again from cold.
+So only work that arrives fully specified is handed to `kelpie:mech-executor`, which is also the only kind of work its Sonnet pin is measured on.
+
 On the first prompt of a session the transcript has no assistant turn yet, so kelpie reads your model from a record its SessionStart hook writes to the plugin's data directory.
-An interactive session names its model when it starts and when it compacts; a resume, a `/clear`, and a `claude -p` session do not, so kelpie keeps no record for them.
-There, and only there, the note's first line says which model your session has to be above to take the route, and the model decides, since it knows what it runs on.
+An interactive session names its model when it starts and when it compacts; a resume, a `/clear`, and a `claude -p` session do not, and no hook payload or environment variable names it either.
+There kelpie assumes your session runs on Opus, and the decision log says the model was assumed.
+A route to Opus then keeps the work in your session, and a route to Sonnet or Haiku is delegated.
+If you run `claude -p` on Sonnet, that can mean a hand-off to a Sonnet subagent that saves nothing.
 
 Three things to know before you turn it on.
 
@@ -133,7 +138,7 @@ This is the newest part of kelpie and the least measured.
 5. **Check that it asks.**
    Turn on [the decision log](#the-decision-log) and send an ordinary prompt, not a slash command.
    The `decision` line reads `"consulted": true` when every step above holds, and its `consult_reason` names the one that failed when it does not.
-   `"decided_by": "jev"` means Jev answered and its route became the note, which then starts with `decided with jev`.
+   `"decided_by": "jev"` means Jev answered and its route became the note, which then says `decided with jev`.
    `"decided_by": "signals"` with `"consulted": true` means the call failed or came back unsure, and the `jev_attempt` lines before it carry the HTTP status of each call.
 
 To stop sending prompts, turn off "Send prompts to Jev" in `/config` or `/plugin configure kelpie@kelpie`, and restart the session.

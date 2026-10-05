@@ -128,9 +128,8 @@ const routeNote = async (answers, { prompt = MEASURED, model = 'claude-opus-5', 
 test('prefer mode routes the prompt the A/B actually ran, with no threshold override anywhere', async () => {
   const { note, seen } = await routeNote({ difficulty: 1.1 })
   assert.equal(seen.length, 1, 'one call, five questions in it')
-  assert.match(note, /decided with jev: delegate this/)
-  assert.match(note, /kelpie:mech-executor with model: sonnet/)
-  assert.match(note, /moderate \(difficulty 1\.1\)/)
+  assert.match(note, /^Hand the implementation to kelpie:mech-executor with model: sonnet, giving it a complete spec, and review what it returns before you finish\./)
+  assert.match(note, /route decided with jev/)
 })
 
 test('an install nobody configured consults too, because prefer is the default', async () => {
@@ -169,23 +168,25 @@ test('work too small to hand over is an answer, and it is still delivered', asyn
 
 test('read-only work goes to kelpie:recon on haiku, not to Explore on the session model', async () => {
   const { note } = await routeNote({ readOnly: 0.9 }, { prompt: 'where is the session cookie read' })
-  assert.match(note, /Send the lookup to kelpie:recon with model: haiku/)
+  assert.match(note, /^Hand the lookups to kelpie:recon with model: haiku and work from its report\./)
   assert.doesNotMatch(note, /Explore/)
-  assert.doesNotMatch(note, /Spec it in one shot/, 'recon takes a question, not an acceptance criterion')
+  assert.doesNotMatch(note, /spec/, 'recon takes a question, not an acceptance criterion')
 })
 
 test('a read-only question that needs reasoning goes to kelpie:analyst on sonnet, asked one exact question', async () => {
   const { note } = await routeNote({ readOnly: 0.9, difficulty: 1.1 }, { prompt: 'check whether the retry path can double-charge' })
-  assert.match(note, /Send the question to kelpie:analyst with model: sonnet: moderate \(difficulty 1\.1\)/)
-  assert.match(note, /Ask one exact question/)
-  assert.doesNotMatch(note, /Spec it in one shot/, 'the analyst takes a question, not an acceptance criterion')
+  assert.match(note, /^Put the question to kelpie:analyst with model: sonnet as one exact question, and check its answer against the lines it cites/)
+  assert.doesNotMatch(note, /spec/, 'the analyst takes a question, not an acceptance criterion')
   assert.doesNotMatch(note, /kelpie:recon/)
 })
 
-test('an open decision is resolved here, and the rest goes to a cheaper model', async () => {
-  const { note } = await routeNote({ specified: 0.2, difficulty: 1.1 }, { prompt: 'make the uploader nicer' })
-  assert.match(note, /Resolve every open decision here first \(fully_specified 0\.2\)\. Then hand over what is left\./)
-  assert.match(note, /kelpie:mech-executor with model: sonnet/)
+test('work with an open decision in it stays here, and fully specified work goes to a cheaper model', async () => {
+  const open = (await routeNote({ specified: 0.2, difficulty: 1.1 }, { prompt: 'make the uploader nicer' })).note
+  assert.match(open, /keep this in this session/)
+  assert.match(open, /design is still open \(fully_specified 0\.2\)/)
+  assert.doesNotMatch(open, /mech-executor/)
+  const specified = (await routeNote({ specified: 0.9, difficulty: 1.1 }, { prompt: 'rename getUser to fetchUser in src/api' })).note
+  assert.match(specified, /^Hand the implementation to kelpie:mech-executor with model: sonnet, giving it a complete spec, and review what it returns before you finish\./)
 })
 
 test('a route on the session\'s own model is no route: hard, long work stays under an opus session, reviewed', async () => {
@@ -207,21 +208,21 @@ test('a route note never names an effort, because the Agent tool cannot pass one
   }
 })
 
-test('the first prompt of a session gets the route, and the price comparison goes to the model', async () => {
+test('the first prompt of a session gets the route as a plain plan, with the session taken to be opus', async () => {
   // There is no assistant turn in the transcript yet, and no hook payload names the model. On run 02 that was every
-  // consult, and a route that named no model inherited the session's, so no route could be cheaper.
+  // consult. A note that handed the comparison to the model ("If this session runs on a model above sonnet: ...") was
+  // followed 0 times in 5 on a replayed ticket, and the plain plan 6 times in 7.
   const { note } = await routeNote({ difficulty: 1.1 }, { model: null })
-  assert.match(note, /costs less than doing this here if this session runs on a model above sonnet/)
-  assert.match(note, /If this session runs on sonnet or a cheaper model, do the work here instead/)
-  assert.match(note, /kelpie:mech-executor with model: sonnet/)
+  assert.match(note, /^Hand the implementation to kelpie:mech-executor with model: sonnet/)
+  assert.doesNotMatch(note, /if this session runs on/i)
 })
 
-test('with the model unknown, the first line is the condition, not an unconditional "delegate this."', async () => {
+test('with the model unknown, a route to opus keeps the work here instead of spawning at the session\'s own price', async () => {
   // On 2026-09-23 an Opus session's first prompt got "delegate this." above a bullet saying an Opus session should
-  // keep the work, and it spawned three agents on Opus. The line a model acts on is the first one.
+  // keep the work, and it spawned three agents on Opus. With the session taken to be opus, that route is no route.
   const { note } = await routeNote({ difficulty: 1.92, longHorizon: 0.73, readOnly: 0.9 }, { model: null })
-  const [header] = note.split('\n')
-  assert.match(header, /decided with jev: delegate this only if this session runs on a model above opus\.$/)
+  assert.match(note, /keep this in this session/)
+  assert.match(note, /model is unknown and taken to be opus/)
 })
 
 /** A SessionStart record in a plugin data directory, the way hooks/session-model/record.mjs leaves it. */
@@ -244,8 +245,7 @@ test('the first prompt of an Opus session keeps hard, long work here once Sessio
 test('the first prompt of an Opus session still hands cheaper work down, with no condition left for the model', async () => {
   const env = await recorded('claude-opus-5-5')
   const { note } = await routeNote({ difficulty: 1.1 }, { model: null, env })
-  assert.match(note, /decided with jev: delegate this\.$/m)
-  assert.match(note, /kelpie:mech-executor with model: sonnet/)
+  assert.match(note, /^Hand the implementation to kelpie:mech-executor with model: sonnet/)
   assert.doesNotMatch(note, /if this session runs on/i)
 })
 
@@ -264,7 +264,7 @@ test('the log says which source named the session model', async () => {
     const decision = lineFor(await lines(log), 'decision')
     assert.equal(decision.session_model, 'opus')
     assert.equal(decision.session_model_source, 'session_start')
-    assert.equal(decision.route.only_above, null)
+    assert.equal(decision.route.session_assumed, null)
   })
 })
 
@@ -282,7 +282,17 @@ test('an unsure difficulty is read one level harder, and the route still arrives
   const { note, seen } = await routeNote({ difficulty: 0.1, confidence: 0.3 })
   assert.equal(seen.length, 1)
   assert.match(note, /kelpie:mech-executor with model: sonnet/, 'unsure mechanical is read as moderate')
-  assert.match(note, /read one level harder/)
+})
+
+test('the reasons the note leaves out, scores included, are in the decision log', async () => {
+  const cwd = await project('prefer')
+  const log = join(cwd, 'kelpie.jsonl')
+  await withStub(answering({ difficulty: 0.1, confidence: 0.3 }), async ({ url }) => {
+    await runHook(event(cwd, MEASURED, await transcript(cwd, 'claude-opus-5')), { CLAUDE_PLUGIN_OPTION_JEV_API_KEY: 'test-key', KELPIE_GATE_JEV_URL: url, KELPIE_LOG: log })
+    const decision = lineFor(await lines(log), 'decision')
+    assert.match(decision.reason, /read one level harder because difficulty came back at confidence 0\.3/)
+    assert.equal(decision.route.agentType, 'kelpie:mech-executor')
+  })
 })
 
 test('an unsure answer that decided the route does leave the mode note standing', async () => {
@@ -305,13 +315,13 @@ test('an unsure answer that decided the route does leave the mode note standing'
   })
 })
 
-test('the answers run 02 got now name a route an Opus session can take', async () => {
+test('the answers run 02 got keep the work here, because the design was still open', async () => {
   // Four of these are what a real call returned on the prompt above, recorded from kelpie's own benchmark. The fifth,
-  // substantial, did not exist yet and is assumed true. The old question answered 0.2 here, and no route followed.
+  // substantial, did not exist yet and is assumed true. Every ticket of run 06 came back with fully_specified near
+  // 0.07 too, and handing that work over after settling the design cost more than doing it here.
   const { note } = await routeNote({ substantial: 0.9, readOnly: 0.02, specified: 0.11, difficulty: 1.68, longHorizon: 0.49, confidence: 0.52 })
-  assert.match(note, /delegate this/)
-  assert.match(note, /Resolve every open decision here first/)
-  assert.match(note, /kelpie:mech-executor with model: sonnet/)
+  assert.match(note, /keep this in this session/)
+  assert.match(note, /design is still open \(fully_specified 0\.11\)/)
   assert.doesNotMatch(note, /kelpie:verifier/, 'the review was difficulty\'s call, and difficulty was not sure enough')
 })
 
@@ -419,7 +429,7 @@ test('the log records the call, the answers, the route, and who decided', async 
     assert.equal(decision.score, 0, 'the keyword score is still recorded, and it still disagrees')
     assert.equal(decision.route.delegate, true)
     assert.equal(decision.route.model, 'sonnet')
-    assert.equal(decision.route.only_above, null, 'the session model was known, so no condition went to the model')
+    assert.equal(decision.route.session_assumed, null, 'the session model was known, so nothing was assumed')
     assert.ok(decision.note_chars > 0)
   })
 })
@@ -527,7 +537,7 @@ test('a typo in the switch that sends prompts away leaves them here', () => {
   }
 })
 
-test('a route note names the route and the answer behind it, and never argues both ways', () => {
+test('a route note is one plan, with no scores in it to argue with', () => {
   const answers = {
     substantial: { type: 'noul', noul: 0.8 },
     read_only: { type: 'noul', noul: 0.1 },
@@ -536,10 +546,10 @@ test('a route note names the route and the answer behind it, and never argues bo
     long_horizon: { type: 'noul', noul: 0.1 },
   }
   const note = renderRoute(decidePrompt(answers, { session: 'opus' }))
-  assert.match(note, /kelpie:mech-executor with model: haiku/)
-  assert.match(note, /A subagent on haiku costs less than doing this here/)
+  assert.match(note, /^Hand the implementation to kelpie:mech-executor with model: haiku/)
+  assert.doesNotMatch(note, /\d\.\d/, 'the scores are in the decision log; in the note they read as an argument the model can decline')
   assert.doesNotMatch(note, /keep this in this session/)
-  assert.doesNotMatch(note, /if this session runs on/i, 'the session model was known, so the hook compared it itself')
+  assert.doesNotMatch(note, /if this session runs on/i, 'a condition was measured to stop the route being taken')
   assert.doesNotMatch(note, /kelpie:verifier/, 'the review gate is one cell, and this is not it')
-  assert.match(note, /Security-sensitive work stays in this session/)
+  assert.match(note, /route decided with jev\)$/)
 })

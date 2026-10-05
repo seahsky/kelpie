@@ -115,7 +115,7 @@ const main = async () => {
     session_model: session.model,
     session_model_source: session.modelSource,
     decided_by: route === null ? 'signals' : 'jev',
-    route: route === null ? null : { delegate: route.delegate, agentType: route.agentType, model: route.model, only_above: route.onlyAbove ?? null, review: route.review },
+    route: route === null ? null : { delegate: route.delegate, agentType: route.agentType, model: route.model, session_assumed: route.sessionAssumed ?? null, review: route.review },
     emitted: note !== null,
     reason: route === null ? verdict.reason : route.reason,
     prompt_chars: prompt.length,
