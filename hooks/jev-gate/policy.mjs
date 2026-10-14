@@ -8,6 +8,9 @@ import { MODEL_TIERS } from './session.mjs'
 /** Cheapest first. `fable` is absent on purpose: at $10/Mtok input against opus's $5, routing up to it can never be a saving. */
 export const MODEL_LADDER = ['haiku', 'sonnet', 'opus']
 
+/** The session model a prompt route assumes when nothing names it. See decidePrompt for why, and what it costs. */
+export const ASSUMED_SESSION = 'opus'
+
 /** Cheapest first. `max` is absent on purpose: Stage 4 caps effort at xhigh. */
 export const EFFORT_LADDER = ['low', 'medium', 'high', 'xhigh']
 
@@ -332,24 +335,35 @@ const rungReason = (difficulty, longHorizon) => {
  * `model`: a read-only lookup (mechanical) to kelpie:recon, a read-only question that needs reasoning to
  * kelpie:analyst, and everything else to kelpie:mech-executor.
  *
- * Work with an open decision in it is delegated after the decision, not with it. The decision is made here, and what
- * is handed over afterwards is fully specified, which is the only kind of work the Sonnet pin on mech-executor is
- * measured on. skills/orchestration/SKILL.md says the same tier "fails expensively rather than cheaply" on
- * open-ended work, so the precondition is part of the route rather than advice beside it. The analyst gets the same
- * precondition in its own words: a vague question comes back as a survey, and a survey is the finder failure. A recon
- * lookup gets none, because a lookup has no decision in it.
+ * Work that changes the repository with an open decision in it stays here, which is the rule decideFanout already
+ * applies and the exclusion skills/delegation-triage/SKILL.md states for every mode. The Sonnet pin on mech-executor is
+ * measured on fully specified work only. This route used to send such work out after the decision instead: settle
+ * the design here, then hand the implementation over. On 2026-09-24, ten tickets from a private repository on Opus 5.5
+ * at medium effort, that route was taken 9 times in 9 and the arm cost a median 20.7% more than no plugin, cheaper on
+ * 3 tickets of 10 (sign test p=0.34). Settling the design meant this session read the code anyway: its own share was
+ * about three quarters of what the whole job cost with no plugin, and the Sonnet executor then read the same code
+ * again from cold. A read-only question with an open decision in it still goes to the analyst, with the precondition
+ * that the question is pinned down here first, because a vague question comes back as a survey and a survey is the
+ * finder failure. Nothing measured supports or rejects that route yet. A recon lookup gets no precondition, because a
+ * lookup has no decision in it.
  *
  * No effort is named. The Agent tool takes a per-call `model` and has no effort parameter, so an effort in a
  * prompt-level route would be something the model cannot pass, and the role's own frontmatter effort applies either
  * way. The fan-out stages keep theirs, because a workflow's agent() call does take one.
  *
- * An unknown session model hands the comparison to the model rather than dropping it. On the first prompt of a
- * session the transcript holds no assistant turn yet. An interactive startup or compact payload carries the model
- * and hooks/session-model records it, but a resume, a /clear, and every `claude -p` SessionStart send none, and no
- * UserPromptSubmit payload has it (checked on 2.1.278 and 2.1.280). The first prompt is often the only one, and on run 02 the model was unknown on every consult,
- * so every route inherited the session's model and no route could be cheaper. So the route is named with
- * `onlyAbove`, and the note makes its first line conditional on the model running above that rung. The model knows
- * what it runs on.
+ * An unknown session model is taken to be ASSUMED_SESSION, and the route records that it was assumed. On the first
+ * prompt of a session the transcript holds no assistant turn yet. An interactive startup or compact payload carries
+ * the model and hooks/session-model records it, but a resume, a /clear, and every `claude -p` SessionStart send none,
+ * and neither the UserPromptSubmit payload nor the hook's environment names it (checked on 2.1.278 and 2.1.280).
+ *
+ * This used to hand the comparison to the model instead: the route carried `onlyAbove`, and the note opened with "If
+ * this session runs on a model above sonnet: ...". Measured on 2026-09-23, replaying a real ticket on Opus 5.5, that
+ * condition is what stopped the route being taken. The same plan with the condition in front was followed 0 times in
+ * 5; without it, 6 times in 7, the seventh stopped while writing the hand-off spec. A condition gives the model a
+ * reason to weigh the route, and it weighed it against doing the work itself. Assuming Opus costs little where it is
+ * wrong: a route to Opus becomes "keep this here", which is right for every session but Fable, and a route to Sonnet
+ * or Haiku reaches a session that may already run on Sonnet, which then pays a hand-off for nothing. kelpie exists for
+ * sessions that run on Opus.
  *
  * The confidence floor, per answer. An unsure answer that decides whether there is a route means no route, and the
  * mode's own note stands. An unsure difficulty is read one level harder rather than dropped, and the review it alone
@@ -378,28 +392,31 @@ export const decidePrompt = (answers, { session = null, floor = null } = {}) => 
   }
   const tiering = floor === null ? null : lowestConfidence(answers, PROMPT_TIERING)
   const unsure = tiering !== null && tiering < floor
-  const ceiling = modelCeiling(session)
-  const review = unsure ? null : decideReview(difficulty, longHorizon, { model: ceiling })
+  const assumed = !MODEL_TIERS.includes(session)
+  const effective = assumed ? ASSUMED_SESSION : session
+  const ceiling = modelCeiling(effective)
+  // An assumed session names no review model: the review inherits, which cannot land above the real session.
+  const review = unsure ? null : decideReview(difficulty, longHorizon, { model: assumed ? null : ceiling })
   const base = { substantial, review: review === null ? null : { ...review, effort: null }, source: 'jev' }
   const stay = (reason) => ({ ...base, delegate: false, agentType: ROLE_SESSION, model: null, effort: null, reason })
   if (substantial < NOUL_MIDPOINT) return stay(`the work is smaller than handing it over (substantial ${substantial})`)
+  if (readOnly < NOUL_MIDPOINT && specified < NOUL_MIDPOINT) {
+    return stay(`the work changes the code and the design is still open (fully_specified ${specified}); settling it means reading the code here, and a subagent would read it again`)
+  }
 
   const rung = promptRung(unsure ? Math.min(difficulty + 1, SCORE_TOP) : difficulty, longHorizon)
   const model = rung === 2 ? (ceiling ?? MODEL_LADDER[MODEL_LADDER.length - 1]) : MODEL_LADDER[rung]
   const why = unsure
     ? `${rungReason(difficulty, longHorizon)}, read one level harder because difficulty came back at confidence ${tiering}, under the floor of ${floor}`
     : rungReason(difficulty, longHorizon)
-  const sessionRank = MODEL_TIERS.indexOf(session)
-  if (sessionRank !== -1 && MODEL_TIERS.indexOf(model) >= sessionRank) {
-    return stay(`the cheapest model that fits is ${model}, for work that is ${why}; this session already runs on ${session}, so a subagent adds the hand-off and saves nothing`)
+  if (MODEL_TIERS.indexOf(model) >= MODEL_TIERS.indexOf(effective)) {
+    const runsOn = assumed ? `this session's model is unknown and taken to be ${effective}` : `this session already runs on ${session}`
+    return stay(`the cheapest model that fits is ${model}, for work that is ${why}; ${runsOn}, so a subagent adds the hand-off and saves nothing`)
   }
   const agentType = readOnly < NOUL_MIDPOINT ? ROLE_MECH : rung === 0 ? ROLE_RECON : ROLE_ANALYST
-  const open = specified < NOUL_MIDPOINT
-  const precondition = !open || agentType === ROLE_RECON
-    ? null
-    : agentType === ROLE_ANALYST
-      ? `Pin down the exact question here first (fully_specified ${specified})`
-      : `Resolve every open decision here first (fully_specified ${specified})`
+  const precondition = agentType === ROLE_ANALYST && specified < NOUL_MIDPOINT
+    ? `Pin down the exact question here first (fully_specified ${specified})`
+    : null
   return {
     ...base,
     delegate: true,
@@ -407,7 +424,7 @@ export const decidePrompt = (answers, { session = null, floor = null } = {}) => 
     model,
     effort: null,
     ...(precondition === null ? {} : { precondition }),
-    ...(sessionRank === -1 ? { onlyAbove: model } : {}),
+    ...(assumed ? { sessionAssumed: ASSUMED_SESSION } : {}),
     reason: why,
   }
 }

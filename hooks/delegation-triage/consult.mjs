@@ -109,65 +109,61 @@ export const consult = async ({ prompt, sessionModel = null, env = {}, record = 
 /** "kelpie:mech-executor with model: sonnet", written the way the Agent tool call takes it. */
 const call = ({ agentType, model }) => (model === null ? `${agentType} at this session's own model` : `${agentType} with model: ${model}`)
 
-const routeLine = (decision) => {
-  if (decision.agentType === ROLE_RECON) return `- Send the lookup to ${call(decision)}: ${decision.reason}. You want the answer, not the file dumps.`
-  if (decision.agentType === ROLE_ANALYST) return `- Send the question to ${call(decision)}: ${decision.reason}. You want the conclusion and the lines behind it, not the file dumps.`
-  return `- Spawn ${call(decision)}: ${decision.reason}.`
+/**
+ * The route as one instruction, in the order the work happens: what to hand over and to whom, and how to check what
+ * comes back.
+ *
+ * Why a single imperative sentence and not the verdict with its reasons. On 2026-09-23 the route for one of kelpie's
+ * benchmark tickets was mech-executor on Sonnet, and Opus 5.5 did the work itself. Replaying the ticket's opening
+ * with only the note varied: the note as it was then ("A subagent on sonnet costs less than doing this here ...
+ * (substantial 0.87)", "Resolve every open decision here first (fully_specified 0.07). Then hand over what is left.",
+ * "Spawn kelpie:mech-executor with model: sonnet: hard (difficulty 1.77 ...)") was followed 0 times in 9, whether it
+ * was conditional or not, whichever way mech-executor described itself, and when it was repeated at the first edit.
+ * "Settle the design yourself, then hand the implementation to kelpie:mech-executor with model: sonnet, giving it a
+ * complete spec, and review what it returns before you open the PR." was followed 4 times in 4, from this same hook
+ * as well as from the user's prompt. A cost argument with scores in it reads as advice; a plan reads as the plan.
+ * So the note is the plan, and the scores go to the decision log, which already records them.
+ */
+const plan = (decision) => {
+  const to = call(decision)
+  if (decision.agentType === ROLE_RECON) return `hand the lookups to ${to} and work from its report`
+  if (decision.agentType === ROLE_ANALYST) {
+    const check = 'as one exact question, and check its answer against the lines it cites before you rely on it'
+    return decision.precondition ? `pin down the exact question yourself, then put it to ${to} ${check}` : `put the question to ${to} ${check}`
+  }
+  // No precondition form: decidePrompt keeps work with an open design decision in this session.
+  return `hand the implementation to ${to}, giving it a complete spec, and review what it returns before you finish`
 }
 
-/**
- * The line that hands the price comparison to the model, when the hook could not make it.
- *
- * Only a headless session's first prompt gets it in practice. An interactive session's model is recorded at
- * SessionStart, and after one assistant turn the transcript names it, so decidePrompt compares the rungs itself.
- */
-const onlyAboveLine = (model) => `- If this session runs on ${model} or a cheaper model, do the work here instead: a subagent on the same model pays for the hand-off and saves nothing.`
+const capitalised = (text) => `${text.charAt(0).toUpperCase()}${text.slice(1)}`
 
-const SPEC = '- Spec it in one shot: exact file paths, exact symbol names, acceptance criteria, and why the work matters. A subagent cannot ask you a question mid-task.'
-
-const ASK = '- Ask one exact question: the files or symbols it concerns, the claims to check if there are any, and what the answer is for. A subagent cannot ask you a question mid-task.'
-
-/** A lookup takes a question as it stands, a question that needs reasoning takes a sharp one, and work takes a spec. */
-const briefLine = (agentType) => (agentType === ROLE_RECON ? null : agentType === ROLE_ANALYST ? ASK : SPEC)
+const reviewSentence = (review) => `Then have ${call(review)} check the result, unless a test, type check, lint, or build settles it: run that instead.`
 
 const reviewLine = (review) => `- Then have ${call(review)} check the result. Where a test, type check, lint, or build settles the question, run that first and skip this: a verifier stage over 20 migration trials found nothing the check had not already named and took 74.8% of the arm's cost.`
 
 const STANDING = '- Security-sensitive work stays in this session whatever this says. Opus has been observed refusing delegated security tasks that it accepts inline.'
 
-/**
- * The first line, which is the one a model acts on.
- *
- * A route that holds only above some model says so here rather than in a bullet under it. The unconditional
- * "delegate this." once headed a note whose next lines said to keep the work on an Opus session, and an Opus
- * session read the header and delegated at its own price.
- */
-const verdict = (decision) => {
-  if (!decision.delegate) return 'keep this in this session.'
-  return decision.onlyAbove ? `delegate this only if this session runs on a model above ${decision.onlyAbove}.` : 'delegate this.'
-}
+/** Kept on every note, last, so the transcript scan and a reader can both tell where the instruction came from. */
+const SOURCE = '(kelpie delegation triage, prefer mode, route decided with jev)'
 
 /**
  * The note for a decided route.
  *
- * It names the route and the answer behind it, rather than restating the policy. That is the point of asking: prefer
- * mode's own note is a list of routes the model then has to choose between, and a list of options on every prompt is
- * how the first run ended with a note delivered thirteen times and referenced zero times.
+ * No condition in it. A route only reaches here when its model is below the session's, known or assumed (see
+ * decidePrompt), so there is nothing left for the model to compare, and a condition was measured to stop the route
+ * being taken. Nothing but the plan either: the security caution that used to close every note is in the orchestration
+ * skill and in "keep this here" notes, and the one form measured to work carried only the plan and this source line.
  */
 export const renderRoute = (decision) => {
-  const header = `kelpie delegation triage (prefer mode), decided with jev: ${verdict(decision)}`
-  const lines = [header, '']
   if (decision.delegate) {
-    const condition = decision.onlyAbove ? ` if this session runs on a model above ${decision.onlyAbove}` : ''
-    lines.push(`A subagent on ${decision.model} costs less than doing this here${condition}: the work is big enough to outrun the hand-off (substantial ${decision.substantial}), and ${decision.model} is enough for it.`)
-    if (decision.onlyAbove) lines.push(onlyAboveLine(decision.onlyAbove))
-    if (decision.precondition) lines.push(`- ${decision.precondition}. Then hand over what is left.`)
-    lines.push(routeLine(decision))
-    const brief = briefLine(decision.agentType)
-    if (brief !== null) lines.push(brief)
-  } else {
-    lines.push(`${decision.reason.charAt(0).toUpperCase()}${decision.reason.slice(1)}.`)
-    lines.push('- Prefer mode delegates when a subagent costs less than this session. This is a prompt where it does not, so do the work here.')
+    const lines = [`${capitalised(plan(decision))}.`]
+    if (decision.review) lines.push(reviewSentence(decision.review))
+    lines.push(SOURCE)
+    return lines.join('\n')
   }
+  const lines = [`kelpie delegation triage (prefer mode), decided with jev: keep this in this session.`, '']
+  lines.push(`${capitalised(decision.reason)}.`)
+  lines.push('- Prefer mode delegates when a subagent costs less than this session. This is a prompt where it does not, so do the work here.')
   if (decision.review) lines.push(reviewLine(decision.review))
   lines.push(STANDING)
   return lines.join('\n')

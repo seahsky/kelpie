@@ -195,7 +195,7 @@ const ROUTES = [
   'Hand work to a subagent when it runs on a cheaper model than this session and the work is big enough to outrun the hand-off. A subagent on your own model pays for the hand-off and saves nothing, so where the cheapest model that fits is yours, do the work here.',
   '- Lookups that take more than a search or two: kelpie:recon, on Haiku. It reports what the code says, not what is wrong with it.',
   '- Read-only questions that need reasoning, such as tracing a flow or checking a claim against the code: kelpie:analyst, on Sonnet. Ask it one exact question.',
-  '- Fully-specified work: kelpie:mech-executor, on Sonnet unless you pass model: haiku for a pattern-only edit. Resolve every open decision first, then spec it in one shot with exact paths and acceptance criteria, because a subagent cannot ask you a question mid-task.',
+  '- Work that arrived fully specified: kelpie:mech-executor, on Sonnet unless you pass model: haiku for a pattern-only edit. Spec it in one shot with exact paths and acceptance criteria, because a subagent cannot ask you a question mid-task.',
   '- The same treatment across many files: a kelpie workflow, /kelpie:migrate-in-parallel or /kelpie:audit-many-files, which fans out and then settles correctness with one executable check.',
   '- A claim no test, type check, lint, or build can settle: kelpie:verifier. Where a check can settle it, run the check instead.',
   '- Still on the main thread whatever the mode: work with open design decisions left in it, and security-sensitive work. Any ad-hoc fan-out sets model explicitly.',

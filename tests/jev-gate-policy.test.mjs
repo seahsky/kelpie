@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  ASSUMED_SESSION,
   EFFORT_LADDER,
   MODEL_LADDER,
   MODELS_WITHOUT_EFFORT,
@@ -319,12 +320,23 @@ test('an unsure mechanical read is read one level harder, which moves it from re
   assert.equal(route.model, 'sonnet')
 })
 
-test('an open decision is resolved here first, and what is left goes out at the cheaper rung', () => {
-  const route = routeFor({ specified: 0.2, difficulty: 1.0 })
-  assert.equal(route.delegate, true)
-  assert.equal(route.agentType, ROLE_MECH)
-  assert.equal(route.model, 'sonnet')
-  assert.match(route.precondition, /Resolve every open decision here first \(fully_specified 0\.2\)/)
+test('work that changes the code with an open decision in it stays here, at any rung', () => {
+  // Run 06 measured the old route, settle the design here and hand the rest to mech-executor: taken 9 times in 9, and
+  // the arm cost a median 20.7% more than no plugin.
+  for (const session of ['opus', 'fable', null]) {
+    const route = routeFor({ specified: 0.2, difficulty: 1.0 }, session)
+    assert.equal(route.delegate, false, String(session))
+    assert.equal(route.agentType, ROLE_SESSION)
+    assert.match(route.reason, /design is still open \(fully_specified 0\.2\)/)
+  }
+  assert.equal(routeFor({ specified: 0.5, difficulty: 1.0 }).delegate, true, '0.5 is the Noul midpoint, and the tie goes to fully specified')
+  assert.equal(routeFor({ specified: 0.95, difficulty: 1.0 }).precondition, undefined, 'fully specified work goes out with nothing to settle first')
+})
+
+test('an open decision still keeps its review, because the review gate runs on every route', () => {
+  const route = routeFor({ specified: 0.1, difficulty: 2.0, longHorizon: 0.9 }, 'fable')
+  assert.equal(route.delegate, false)
+  assert.deepEqual(route.review, { agentType: ROLE_VERIFIER, model: 'opus', effort: null })
 })
 
 test('no prompt route names an effort, because the Agent tool that carries it out cannot pass one', () => {
@@ -345,22 +357,24 @@ test('the review gate also covers work this session keeps, because self-certific
   assert.deepEqual(route.review, { agentType: ROLE_VERIFIER, model: 'opus', effort: null })
 })
 
-test('an unknown session model still names the route, and hands the price comparison to the model', () => {
+test('an unknown session model is taken to be opus, and the route says it was assumed', () => {
   // The first prompt of a session has no assistant turn to read a model from, and no hook payload carries one. On
-  // run 02 that was every consult. Naming no model there made every route the session's own model, so none of them
-  // could be cheaper.
+  // run 02 that was every consult. Handing the comparison to the model in the note stopped the route being taken, so
+  // the comparison is made here against ASSUMED_SESSION.
+  assert.equal(ASSUMED_SESSION, 'opus')
   const moderate = routeFor({ difficulty: 1.0 }, null)
   assert.equal(moderate.delegate, true)
   assert.equal(moderate.model, 'sonnet')
-  assert.equal(moderate.onlyAbove, 'sonnet')
+  assert.equal(moderate.sessionAssumed, 'opus')
+  assert.equal(moderate.onlyAbove, undefined, 'no condition goes to the model any more')
   const hard = routeFor({ difficulty: 2.0, longHorizon: 0.9 }, null)
-  assert.equal(hard.model, 'opus', 'the top of the ladder, since no ceiling is known')
-  assert.equal(hard.onlyAbove, 'opus')
-  assert.equal(hard.review.model, null, 'the review inherits, which cannot be above the session')
+  assert.equal(hard.delegate, false, 'a route to opus saves nothing on an opus session')
+  assert.match(hard.reason, /unknown and taken to be opus/)
+  assert.equal(hard.review.model, null, 'the review inherits, which cannot land above the real session')
 })
 
 test('a known session model decides the comparison itself and carries no condition', () => {
-  assert.equal(routeFor({ difficulty: 1.0 }, 'opus').onlyAbove, undefined)
+  assert.equal(routeFor({ difficulty: 1.0 }, 'opus').sessionAssumed, undefined)
 })
 
 test('a missing answer is an error, not a confident zero', () => {
@@ -384,18 +398,22 @@ test('an unsure difficulty is read one level harder, not dropped', () => {
 // confidence under the floor, so this is the case the level rule was written for.
 const RUN_02 = { substantial: 0.9, readOnly: 0.02, specified: 0.1, difficulty: 1.69, longHorizon: 0.49, confidence: 0.53 }
 
-test('the answers run 02 got now name a route an Opus session can take', () => {
+test('the answers run 02 got keep the work here, because its design was still open', () => {
   const route = routeFor(RUN_02, 'opus')
-  assert.equal(route.delegate, true)
-  assert.equal(route.agentType, ROLE_MECH)
-  assert.equal(route.model, 'sonnet', 'moderate and hard-but-short are both sonnet, so the doubt between them costs nothing')
-  assert.match(route.precondition, /Resolve every open decision here first/)
+  assert.equal(route.delegate, false)
+  assert.match(route.reason, /design is still open \(fully_specified 0\.1\)/)
 })
 
-test('the same answers stay on the first prompt too, unless the session is above sonnet', () => {
-  const route = routeFor(RUN_02, null)
-  assert.equal(route.model, 'sonnet')
-  assert.equal(route.onlyAbove, 'sonnet')
+test('the same answers, fully specified, route to sonnet, and on the first prompt too', () => {
+  const specified = { ...RUN_02, specified: 0.9 }
+  const known = routeFor(specified, 'opus')
+  assert.equal(known.delegate, true)
+  assert.equal(known.agentType, ROLE_MECH)
+  assert.equal(known.model, 'sonnet', 'moderate and hard-but-short are both sonnet, so the doubt between them costs nothing')
+  const first = routeFor(specified, null)
+  assert.equal(first.delegate, true)
+  assert.equal(first.model, 'sonnet')
+  assert.equal(first.sessionAssumed, 'opus')
 })
 
 test('an unsure answer that decides the route names no route at all, which is not a decision to stay', () => {
